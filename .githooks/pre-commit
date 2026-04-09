@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+blocked_paths=""
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+for path in $staged_files; do
+  case "$path" in
+    .env|*/.env)
+      blocked_paths="${blocked_paths}\n- $path"
+      ;;
+    .venv/*|*/.venv/*|.venv|*/.venv)
+      blocked_paths="${blocked_paths}\n- $path"
+      ;;
+    __pycache__/*|*/__pycache__/*|__pycache__|*/__pycache__)
+      blocked_paths="${blocked_paths}\n- $path"
+      ;;
+  esac
+done
+
+if [ -n "$blocked_paths" ]; then
+  printf '%s\n' "Commit blocked. The following forbidden paths are staged:"
+  printf '%b\n' "$blocked_paths"
+  printf '%s\n' "Remove them from the index before committing."
+  exit 1
+fi
+
+exit 0
