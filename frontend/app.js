@@ -11,7 +11,10 @@ const state = {
   lowOpportunityItems: [],
   recommendedOpportunity: null,
   activeOpportunityCode: "",
-  activeOpportunityDetail: null
+  activeOpportunityDetail: null,
+  stockSearchResults: [],
+  stockSearchTimer: null,
+  stockSearchRequestId: 0
 };
 
 const dom = {
@@ -27,8 +30,8 @@ const dom = {
   homeEtfSummary: document.getElementById("homeEtfSummary"),
   homeEtfChips: document.getElementById("homeEtfChips"),
   refreshHomeBtn: document.getElementById("refreshHomeBtn"),
-  stockCodeInput: document.getElementById("stockCodeInput"),
-  stockNameInput: document.getElementById("stockNameInput"),
+  stockSearchInput: document.getElementById("stockSearchInput"),
+  stockSearchDropdown: document.getElementById("stockSearchDropdown"),
   addStockBtn: document.getElementById("addStockBtn"),
   stockManageText: document.getElementById("stockManageText"),
   stockWatchList: document.getElementById("stockWatchList"),
@@ -67,7 +70,17 @@ const API_BASE = (() => {
     window.SMART_MONEY_API_BASE ||
     document.querySelector('meta[name="smart-money-api-base"]')?.getAttribute("content") ||
     "";
-  return String(configuredBase).trim().replace(/\/+$/, "");
+  const normalizedBase = String(configuredBase).trim().replace(/\/+$/, "");
+  if (normalizedBase) return normalizedBase;
+
+  const localApiBase = "http://127.0.0.1:8000";
+  const { protocol, hostname, port } = window.location;
+  const isLocalHost = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  if ((protocol === "http:" || protocol === "https:") && isLocalHost) {
+    return port === "8000" ? "" : localApiBase;
+  }
+  if (protocol === "file:") return localApiBase;
+  return "";
 })();
 
 function apiPath(path) {
@@ -81,10 +94,12 @@ const api = {
   indexes: apiPath("/api/indexes"),
   indexOptions: apiPath("/api/indexes/options"),
   indexDetail: (code) => apiPath(`/api/indexes/detail?code=${encodeURIComponent(code)}`),
+  opportunities: apiPath("/api/opportunities"),
   lowOpportunity: apiPath("/api/opportunity/low"),
   stockLowOpportunity: apiPath("/api/opportunity/stock_low"),
   opportunityRecommend: apiPath("/api/opportunity/recommend"),
-  opportunityDetail: (code) => apiPath(`/api/opportunity/detail?code=${encodeURIComponent(code)}`)
+  opportunityDetail: (code) => apiPath(`/api/opportunity/detail?code=${encodeURIComponent(code)}`),
+  searchStocks: (keyword) => apiPath(`/api/search-stocks?q=${encodeURIComponent(keyword)}`)
 };
 
 const STATIC_LOW_OPPORTUNITY_ITEMS = [
@@ -255,24 +270,58 @@ function renderStockResults(results) {
     const market = item.market_data || {};
     const fund = item.fund_flow || {};
     const isError = item.status !== "ok";
+    const changeTone = tone(market.pct_change);
+    const fundTone = tone(fund.main_net_inflow);
+    const signalTags = Array.isArray(analysis.signal) ? analysis.signal : [];
+    const riskTags = Array.isArray(analysis.risk) ? analysis.risk : [];
+    const dimensionScores = analysis.dimension_scores || {};
+    const dimensionItems = [
+      ["低位", dimensionScores.low_position],
+      ["量能", dimensionScores.volume_change],
+      ["趋势", dimensionScores.trend_strength],
+      ["资金", dimensionScores.fund_support]
+    ];
+    const conclusion = analysis.conclusion || item.ai_summary || item.error || "暂无结论";
+    const tags = [
+      ...(isError ? [`<span class="stock-tag risk">${esc(item.error || item.status || "异常")}</span>`] : []),
+      ...signalTags.map((tag) => `<span class="stock-tag signal">${esc(tag)}</span>`),
+      ...riskTags.map((tag) => `<span class="stock-tag risk">${esc(tag)}</span>`)
+    ].join("") || `<span class="stock-tag neutral">暂无信号</span>`;
+
     return `
-      <article class="card ${isError ? "error" : ""}">
-        <div class="card-head">
-          <div>
+      <article class="card stock-card ${isError ? "error" : ""}">
+        <div class="stock-card-head">
+          <div class="stock-title">
             <h3>${esc(item.name || "未知股票")}</h3>
-            <div class="sub">${esc(item.code || "N/A")} · 评分 ${esc(item.score ?? 0)}</div>
+            <span>${esc(item.code || "N/A")}</span>
           </div>
-          <span class="badge ${isError ? "error" : ""}">${esc(item.status || "unknown")}</span>
+          <div class="stock-score">
+            <span>评分</span>
+            <strong>${esc(item.score ?? 0)}</strong>
+          </div>
         </div>
-        <div class="kv">
-          <div class="cell"><small>最新价</small><strong>${num(market.latest_price)}</strong></div>
-          <div class="cell"><small>涨跌幅</small><strong>${pct(market.pct_change)}</strong></div>
-          <div class="cell"><small>成交额</small><strong>${amt(market.turnover)}</strong></div>
-          <div class="cell"><small>主力净流入</small><strong>${amt(fund.main_net_inflow)}</strong></div>
+        <div class="stock-quote-row">
+          <strong class="stock-price ${changeTone}">${num(market.latest_price)}</strong>
+          <span class="stock-change ${changeTone}">${pct(market.pct_change)}</span>
         </div>
-        <div class="tags">${(analysis.signal || []).map((tag) => `<span class="tag">${esc(tag)}</span>`).join("") || `<span class="tag">暂无信号</span>`}</div>
-        <div class="tags">${(analysis.risk || []).map((tag) => `<span class="chip bad">${esc(tag)}</span>`).join("") || `<span class="tag">暂无风险</span>`}</div>
-        <div class="summary">${esc(item.ai_summary || item.error || "暂无摘要")}</div>
+        <div class="stock-data-line">
+          <span>成交额</span>
+          <strong>${amt(market.turnover)}</strong>
+        </div>
+        <div class="stock-data-line">
+          <span>主力资金</span>
+          <strong class="${fundTone}">${amt(fund.main_net_inflow)}</strong>
+        </div>
+        <div class="stock-conclusion">${esc(conclusion)}</div>
+        <div class="stock-dimension-row">
+          ${dimensionItems.map(([label, value]) => `
+            <span class="stock-dimension">
+              <b>${esc(label)}</b>
+              <em>${esc(value ?? "--")}</em>
+            </span>
+          `).join("")}
+        </div>
+        <div class="stock-tag-row">${tags}</div>
       </article>
     `;
   }).join("");
@@ -312,6 +361,38 @@ function signalTone(signal) {
   if (signal === "推荐") return "good";
   if (signal === "谨慎") return "bad";
   return "blue";
+}
+
+function opportunitySymbol(item) {
+  return item?.symbol || item?.code || "";
+}
+
+function opportunityScoreObject(item) {
+  return item?.score && typeof item.score === "object" ? item.score : {};
+}
+
+function opportunityScoreValue(item) {
+  const score = opportunityScoreObject(item);
+  return Number(score.total_score ?? item?.score_value ?? item?.score ?? 0);
+}
+
+function opportunitySignal(item) {
+  const signal = item?.signal || item?.tag;
+  if (signal) return signal;
+  const level = opportunityScoreObject(item).level || "";
+  if (level === "A") return "推荐";
+  if (level === "B" || level === "C") return "观察";
+  return "谨慎";
+}
+
+function opportunityReason(item) {
+  const score = opportunityScoreObject(item);
+  return item?.reason || score.conclusion || item?.summary || "暂无理由";
+}
+
+function opportunitySummary(item) {
+  const score = opportunityScoreObject(item);
+  return item?.summary || score.conclusion || "暂无总结";
 }
 
 function renderOpportunityTabs() {
@@ -364,24 +445,27 @@ function renderRecommendedOpportunity() {
     return;
   }
 
+  const symbol = opportunitySymbol(item);
+  const scoreValue = opportunityScoreValue(item);
+  const signal = opportunitySignal(item);
   dom.opportunityRecommendCard.innerHTML = `
     <div class="recommend-main">
       <div class="chips">
-        <span class="chip ${signalTone(item.signal)}">今日自动推荐</span>
+        <span class="chip ${signalTone(signal)}">今日自动推荐</span>
       </div>
       <div>
         <h3>${esc(item.name)}</h3>
-        <div class="sub">${esc(item.code)}</div>
+        <div class="sub">${esc(symbol)}</div>
       </div>
       <div class="recommend-score">
         <div>
           <small class="sub">综合评分</small>
-          <strong>${esc(item.score ?? 0)}</strong>
+          <strong>${esc(scoreValue)}</strong>
         </div>
-        <span class="chip ${signalTone(item.signal)}">${esc(item.signal || "观察")}</span>
+        <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
       </div>
-      <div class="recommend-text">${esc(item.reason || "暂无推荐理由")}</div>
-      <div class="recommend-text">${esc(item.summary || "暂无总结")}</div>
+      <div class="recommend-text">${esc(opportunityReason(item))}</div>
+      <div class="recommend-text">${esc(opportunitySummary(item))}</div>
     </div>
   `;
 }
@@ -393,21 +477,26 @@ function renderOpportunityPool() {
     return;
   }
 
-  dom.opportunityPoolList.innerHTML = items.map((item) => `
-    <article class="opportunity-pool-item ${state.activeOpportunityCode === item.code ? "active" : ""}" data-opportunity-code="${esc(item.code)}">
+  dom.opportunityPoolList.innerHTML = items.map((item) => {
+    const symbol = opportunitySymbol(item);
+    const scoreValue = opportunityScoreValue(item);
+    const signal = opportunitySignal(item);
+    return `
+    <article class="opportunity-pool-item ${state.activeOpportunityCode === symbol ? "active" : ""}" data-opportunity-code="${esc(symbol)}">
       <div class="opportunity-head">
         <div>
           <h3>${esc(item.name)}</h3>
-          <div class="opportunity-code">${esc(item.code)}</div>
+          <div class="opportunity-code">${esc(symbol)}</div>
         </div>
-        <div class="opportunity-score">${esc(item.score ?? 0)}</div>
+        <div class="opportunity-score">${esc(scoreValue)}</div>
       </div>
       <div class="chips">
-        <span class="chip ${signalTone(item.signal)}">${esc(item.signal || "观察")}</span>
+        <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
       </div>
-      <div class="opportunity-reason">${esc(item.reason || "暂无理由")}</div>
+      <div class="opportunity-reason">${esc(opportunityReason(item))}</div>
     </article>
-  `).join("");
+  `;
+  }).join("");
 }
 
 function renderOpportunityDetail() {
@@ -422,17 +511,24 @@ function renderOpportunityDetail() {
   const drawdown = metrics.drawdown || features.drawdown || "--";
   const trend = metrics.trend || (features.trend_turn ? "均线拐头" : "仍待确认");
   const risk = metrics.risk || features.risk || "--";
+  const symbol = opportunitySymbol(item);
+  const scoreValue = opportunityScoreValue(item);
+  const signal = opportunitySignal(item);
+  const score = opportunityScoreObject(item);
+  const subScores = score.sub_scores || {};
+  const tags = score.tags || item.tags || item.signals || [];
   dom.opportunityDetailPanel.innerHTML = `
     <div class="chips">
-      <span class="chip ${signalTone(item.signal)}">${esc(item.signal || "观察")}</span>
-      <span class="chip blue">综合评分 ${esc(item.score ?? 0)}</span>
+      <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
+      <span class="chip blue">综合评分 ${esc(scoreValue)}</span>
+      ${score.level ? `<span class="chip blue">等级 ${esc(score.level)}</span>` : ""}
     </div>
     <div style="margin-top:14px;">
       <h3>${esc(item.name)}</h3>
-      <div class="sub">${esc(item.code)}</div>
+      <div class="sub">${esc(symbol)}</div>
     </div>
-    <div class="recommend-text" style="margin-top:12px;">${esc(item.reason || "暂无理由")}</div>
-    <div class="recommend-text" style="margin-top:8px;">${esc(item.summary || "暂无总结")}</div>
+    <div class="recommend-text" style="margin-top:12px;">${esc(opportunityReason(item))}</div>
+    <div class="recommend-text" style="margin-top:8px;">${esc(opportunitySummary(item))}</div>
     <div class="opportunity-metrics">
       <div class="opportunity-metric">
         <small>回撤幅度</small>
@@ -447,6 +543,17 @@ function renderOpportunityDetail() {
         <strong>${esc(risk)}</strong>
       </div>
     </div>
+    <div class="chips" style="margin-top:14px;">
+      <span class="chip">低位 ${esc(subScores.low ?? "--")}</span>
+      <span class="chip">量能 ${esc(subScores.volume ?? "--")}</span>
+      <span class="chip">趋势 ${esc(subScores.trend ?? "--")}</span>
+      <span class="chip">资金 ${esc(subScores.capital ?? "--")}</span>
+    </div>
+    ${tags.length ? `
+      <div class="chips" style="margin-top:14px;">
+        ${tags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
+      </div>
+    ` : ""}
     ${Object.keys(features).length ? `
       <div class="chips" style="margin-top:14px;">
         <span class="chip ${features.volume_spike ? "good" : "blue"}">量能放大 ${features.volume_spike ? "是" : "否"}</span>
@@ -744,7 +851,7 @@ async function loadOpportunityDetail(code, force = false) {
   state.activeOpportunityCode = code;
   renderOpportunityPool();
   dom.opportunityDetailPanel.innerHTML = `<div class="loading"><div><div class="spinner"></div>正在加载机会详情...</div></div>`;
-  const target = state.lowOpportunityItems.find((item) => item.code === code) || null;
+  const target = state.lowOpportunityItems.find((item) => opportunitySymbol(item) === code) || null;
   state.activeOpportunityDetail = target;
   renderOpportunityDetail();
 }
@@ -753,7 +860,7 @@ function syncOpportunityView(items, mode) {
   state.opportunityMode = mode;
   state.lowOpportunityItems = [...items];
   state.recommendedOpportunity = [...items]
-    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0))[0] || null;
+    .sort((left, right) => opportunityScoreValue(right) - opportunityScoreValue(left))[0] || null;
   renderOpportunityTabs();
   renderRecommendedOpportunity();
   renderOpportunityPool();
@@ -767,10 +874,10 @@ async function applyOpportunityMode(mode) {
     dom.opportunityDetailPanel.innerHTML = `<div class="empty">点击某张个股机会卡片后，这里显示详细信息。</div>`;
 
     try {
-      const payload = await fetchJson(api.stockLowOpportunity);
+      const payload = await fetchJson(api.opportunities);
       state.stockOpportunityItems = payload.data?.items || [];
       syncOpportunityView(state.stockOpportunityItems, "stock");
-      const nextCode = state.recommendedOpportunity?.code || state.lowOpportunityItems[0]?.code || "";
+      const nextCode = opportunitySymbol(state.recommendedOpportunity) || opportunitySymbol(state.lowOpportunityItems[0]) || "";
       if (nextCode) {
         await loadOpportunityDetail(nextCode, true);
       }
@@ -786,7 +893,7 @@ async function applyOpportunityMode(mode) {
   }
 
   syncOpportunityView(state.indexOpportunityItems, "index");
-  const nextCode = state.recommendedOpportunity?.code || state.lowOpportunityItems[0]?.code || "";
+  const nextCode = opportunitySymbol(state.recommendedOpportunity) || opportunitySymbol(state.lowOpportunityItems[0]) || "";
   if (nextCode) {
     await loadOpportunityDetail(nextCode, true);
   }
@@ -830,6 +937,69 @@ async function moveIndex(code, direction) {
   await syncSelectedIndexes(nextSelected, false);
 }
 
+function hideStockSearchDropdown() {
+  state.stockSearchResults = [];
+  dom.stockSearchDropdown.classList.add("hidden");
+  dom.stockSearchDropdown.innerHTML = "";
+}
+
+function renderStockSearchDropdown(items, message = "") {
+  state.stockSearchResults = items || [];
+  if (message) {
+    dom.stockSearchDropdown.innerHTML = `<div class="stock-search-empty">${esc(message)}</div>`;
+    dom.stockSearchDropdown.classList.remove("hidden");
+    return;
+  }
+
+  if (!state.stockSearchResults.length) {
+    hideStockSearchDropdown();
+    return;
+  }
+
+  dom.stockSearchDropdown.innerHTML = state.stockSearchResults.map((item, index) => `
+    <button class="stock-search-option" type="button" data-stock-result-index="${index}">
+      <span>
+        <strong>${esc(item.name)}</strong>
+        <small>${esc(item.code)}</small>
+      </span>
+      <em>点击加入</em>
+    </button>
+  `).join("");
+  dom.stockSearchDropdown.classList.remove("hidden");
+}
+
+async function searchStockOptions() {
+  const keyword = dom.stockSearchInput.value.trim();
+  if (!keyword) {
+    hideStockSearchDropdown();
+    return;
+  }
+
+  const requestId = state.stockSearchRequestId + 1;
+  state.stockSearchRequestId = requestId;
+  renderStockSearchDropdown([], "搜索中...");
+
+  try {
+    const payload = await fetchJson(api.searchStocks(keyword));
+    if (requestId !== state.stockSearchRequestId) return;
+    const items = payload.data?.items || [];
+    renderStockSearchDropdown(items, items.length ? "" : "没有找到匹配股票");
+  } catch (error) {
+    if (requestId !== state.stockSearchRequestId) return;
+    renderStockSearchDropdown([], `搜索失败：${error.message}`);
+  }
+}
+
+function scheduleStockSearch() {
+  window.clearTimeout(state.stockSearchTimer);
+  const keyword = dom.stockSearchInput.value.trim();
+  if (!keyword) {
+    hideStockSearchDropdown();
+    return;
+  }
+  state.stockSearchTimer = window.setTimeout(searchStockOptions, 240);
+}
+
 async function loadStocks() {
   try {
     const payload = await fetchJson(api.stocks);
@@ -842,11 +1012,10 @@ async function loadStocks() {
   }
 }
 
-async function addStock() {
-  const code = dom.stockCodeInput.value.trim();
-  const name = dom.stockNameInput.value.trim();
-  if (!code || !name) {
-    alert("请输入股票代码和股票名称");
+async function addStock(stock = null) {
+  const target = stock || state.stockSearchResults[0];
+  if (!target?.code || !target?.name) {
+    alert("请先搜索并选择一只股票");
     return;
   }
   dom.addStockBtn.disabled = true;
@@ -854,10 +1023,10 @@ async function addStock() {
     await fetchJson(api.stocks, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, name })
+      body: JSON.stringify({ code: target.code, name: target.name })
     });
-    dom.stockCodeInput.value = "";
-    dom.stockNameInput.value = "";
+    dom.stockSearchInput.value = "";
+    hideStockSearchDropdown();
     await loadStocks();
   } catch (error) {
     alert(`添加股票失败：${error.message}`);
@@ -903,7 +1072,27 @@ async function refreshHomeData() {
 
 dom.navButtons.forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
 dom.refreshHomeBtn.addEventListener("click", refreshHomeData);
-dom.addStockBtn.addEventListener("click", addStock);
+dom.addStockBtn.addEventListener("click", () => addStock());
+dom.stockSearchInput.addEventListener("input", scheduleStockSearch);
+dom.stockSearchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  if (state.stockSearchResults.length) {
+    addStock(state.stockSearchResults[0]);
+  } else {
+    searchStockOptions();
+  }
+});
+dom.stockSearchDropdown.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-stock-result-index]");
+  if (!option) return;
+  const target = state.stockSearchResults[Number(option.dataset.stockResultIndex)];
+  addStock(target);
+});
+document.addEventListener("click", (event) => {
+  if (event.target.closest(".stock-search")) return;
+  hideStockSearchDropdown();
+});
 dom.runStockBtn.addEventListener("click", runStockAnalysis);
 dom.refreshIndexBtn.addEventListener("click", () => refreshIndexBoardData(false));
 dom.openIndexSettingsBtn.addEventListener("click", openIndexSettingsModal);

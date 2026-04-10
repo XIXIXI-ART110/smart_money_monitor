@@ -43,6 +43,13 @@ def _safe_float(value: Any) -> float:
 
 def _calculate_score(analysis: dict[str, Any]) -> int:
     """Calculate a score from signals and risks."""
+    total_score = analysis.get("total_score")
+    if total_score is not None:
+        try:
+            return int(total_score)
+        except (TypeError, ValueError):
+            pass
+
     score = 0
     signals = list(analysis.get("signal", []))
     risks = list(analysis.get("risk", []))
@@ -79,9 +86,9 @@ def _build_opportunity_rank(results: list[dict[str, Any]]) -> list[dict[str, Any
             continue
 
         score = int(item.get("score", 0))
-        if score >= 5:
+        if score >= 75:
             level = "strong"
-        elif score >= 3:
+        elif score >= 60:
             level = "medium"
         else:
             continue
@@ -123,8 +130,10 @@ def _classify_style(result: dict[str, Any]) -> str:
     pct_change = _safe_float(market_data.get("pct_change"))
     inflow = _safe_float(fund_flow.get("main_net_inflow"))
 
-    if score >= 4:
+    if score >= 75:
         return "高弹进攻"
+    if score >= 60:
+        return "机会跟踪"
     if inflow > 0 and pct_change > 0:
         return "机构回流"
     if pct_change > 1:
@@ -231,6 +240,10 @@ def _build_fast_summary(
     if error:
         return f"{name} 本次仅返回基础结果：{error}"
 
+    conclusion = str(analysis.get("conclusion", "")).strip()
+    if conclusion:
+        return conclusion
+
     summary_items = [str(item).strip() for item in (analysis.get("summary", []) or []) if str(item).strip()]
     if summary_items:
         return "；".join(summary_items[:2])
@@ -247,6 +260,14 @@ def _build_error_result(code: str, name: str, error: str) -> dict[str, Any]:
         "signal": [],
         "risk": [f"数据抓取失败: {error}"],
         "summary": ["本次未能完成规则分析"],
+        "dimension_scores": {
+            "low_position": 0,
+            "volume_change": 0,
+            "trend_strength": 0,
+            "fund_support": 0,
+        },
+        "total_score": 0,
+        "conclusion": "数据不足，暂时观望",
     }
     return {
         "code": code,

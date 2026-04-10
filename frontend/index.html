@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Money Monitor</title>
-  <link rel="stylesheet" href="/frontend/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=stock-score-20260410">
 </head>
 <body>
   <div class="app">
@@ -41,12 +41,12 @@
         <div class="two-col">
           <div class="panel">
             <h2>强机会</h2>
-            <p>评分 5 分及以上的高优先级标的。</p>
+            <p>评分 75 分及以上的高优先级标的。</p>
             <div id="strongOpportunityList" class="opp-list"><div class="empty">运行分析后展示强机会。</div></div>
           </div>
           <div class="panel">
             <h2>次机会</h2>
-            <p>评分 3 分以上但未达到强机会级别的活跃标的。</p>
+            <p>评分 60 分以上但未达到强机会级别的活跃标的。</p>
             <div id="mediumOpportunityList" class="opp-list"><div class="empty">运行分析后展示次机会。</div></div>
           </div>
         </div>
@@ -78,9 +78,11 @@
             <h2>自选股管理</h2>
             <p>支持查看、添加、删除股票，不影响指数 ETF 模块。</p>
             <div class="form">
-              <input id="stockCodeInput" placeholder="请输入股票代码（如 600519）">
-              <input id="stockNameInput" placeholder="请输入股票名称（如 贵州茅台）">
-              <button id="addStockBtn" type="button">添加股票</button>
+              <div class="stock-search">
+                <input id="stockSearchInput" autocomplete="off" placeholder="输入股票代码或名称（如 600519 / 贵州茅台）">
+                <div id="stockSearchDropdown" class="stock-search-dropdown hidden"></div>
+              </div>
+              <button id="addStockBtn" type="button">添加首个结果</button>
             </div>
             <div class="chips"><span id="stockManageText" class="chip">正在加载自选股...</span></div>
             <div id="stockWatchList" class="watch-list" style="margin-top:14px;"></div>
@@ -238,6 +240,6 @@
     </aside>
   </div>
 
-  <script src="/frontend/app.js"></script>
+  <script src="/static/app.js?v=stock-score-20260410"></script>
 </body>
 </html>

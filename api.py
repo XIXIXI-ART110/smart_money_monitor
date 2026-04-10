@@ -17,12 +17,14 @@ from modules.index_service import get_index_detail_service, get_index_options_se
 from modules.opportunity_service import (
     get_auto_recommendation,
     get_low_opportunity_pool,
+    get_opportunities,
     get_opportunity_detail,
     get_stock_low_opportunity_pool,
 )
 from modules.opportunity_review import calculate_hit_stats, load_opportunity_history, review_opportunities
 from modules.report_service import get_latest_report, get_report_by_filename, list_reports
 from modules.run_service import run_once_service
+from modules.stock_search_service import search_stocks
 from modules.watchlist_service import add_stock, delete_stock, load_watchlist
 
 
@@ -49,7 +51,12 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "null",
+    ],
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,6 +64,7 @@ app.add_middleware(
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
+app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
@@ -138,6 +146,13 @@ def get_stocks() -> dict[str, Any]:
     """Return the current watchlist."""
     stocks = load_watchlist()
     return success_response("stocks loaded", {"stocks": stocks})
+
+
+@app.get("/api/search-stocks")
+def search_stock_options(q: str = "") -> dict[str, Any]:
+    """Search A-share stocks by code or name for the watchlist selector."""
+    items = search_stocks(q)
+    return success_response("stocks searched", {"items": items})
 
 
 @app.post("/api/stocks")
@@ -388,6 +403,17 @@ def get_low_opportunity_api() -> dict[str, Any]:
         "low opportunity pool loaded",
         {
             "items": get_low_opportunity_pool(),
+        },
+    )
+
+
+@app.get("/api/opportunities")
+def get_opportunities_api() -> dict[str, Any]:
+    """Return the StockScoreService-based low-position opportunity pool."""
+    return success_response(
+        "opportunities loaded",
+        {
+            "items": get_opportunities(limit=10),
         },
     )
 

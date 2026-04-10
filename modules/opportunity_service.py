@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Mapping
 
 import pandas as pd
 
 from config import LOGGER
+from modules.fetch_market import fetch_stock_data, normalize_code
 from modules.opportunity_review import _get_hist_dataframe
+from modules.stock_score_service import StockScoreService, safe_float as score_safe_float
 from modules.watchlist_service import load_watchlist
 
 
@@ -440,25 +442,303 @@ def _get_effective_low_pool() -> list[dict[str, Any]]:
     return list(effective_items)
 
 
+_STOCK_SCORE_SERVICE = StockScoreService()
+
+
+def _score_first_float(*values: Any, default: float = 0.0) -> float:
+    """Return the first present numeric value, keeping zero as valid."""
+    for value in values:
+        if value is None or value == "":
+            continue
+        return score_safe_float(value, default=default)
+    return default
+
+
+def _score_first_number(*values: Any, default: float = 0.0) -> float:
+    """Return the first non-zero numeric value."""
+    for value in values:
+        parsed = score_safe_float(value, default=0.0)
+        if parsed:
+            return parsed
+    return default
+
+
+def _score_mapping(value: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _score_numeric_series(dataframe: pd.DataFrame, *names: str) -> pd.Series | None:
+    for name in names:
+        if name in dataframe.columns:
+            return pd.to_numeric(dataframe[name], errors="coerce")
+    return None
+
+
+def _score_candidate_pool() -> list[dict[str, str]]:
+    """Use the current watchlist first; fall back to a small built-in pool."""
+    watchlist = load_watchlist()
+    source = watchlist or DEFAULT_STOCK_POOL
+    candidates: list[dict[str, str]] = []
+    for item in source:
+        code = normalize_code(item.get("code", ""))
+        if not code:
+            continue
+        candidates.append({"code": code, "name": str(item.get("name") or code).strip()})
+    return candidates
+
+
+def _score_fetch_history(code: str) -> pd.DataFrame | None:
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=180)).strftime("%Y%m%d")
+    return _get_hist_dataframe(code, start_date, end_date)
+
+
+def _score_history_features(dataframe: pd.DataFrame | None) -> dict[str, float]:
+    if dataframe is None or dataframe.empty:
+        return {}
+
+    close_series = _score_numeric_series(dataframe, "收盘", "close")
+    high_series = _score_numeric_series(dataframe, "最高", "high")
+    low_series = _score_numeric_series(dataframe, "最低", "low")
+    volume_series = _score_numeric_series(dataframe, "成交量", "volume")
+    change_pct_series = _score_numeric_series(dataframe, "涨跌幅", "pct_change", "change_pct")
+    turnover_rate_series = _score_numeric_series(dataframe, "换手率", "turnover_rate")
+
+    if close_series is None or high_series is None or low_series is None:
+        return {}
+
+    working = pd.DataFrame(
+        {
+            "close": close_series,
+            "high": high_series,
+            "low": low_series,
+        }
+    )
+    working["volume"] = volume_series if volume_series is not None else 0.0
+    working["change_pct"] = change_pct_series if change_pct_series is not None else 0.0
+    working["turnover_rate"] = turnover_rate_series if turnover_rate_series is not None else 0.0
+    working = working.dropna(subset=["close", "high", "low"])
+    if working.empty:
+        return {}
+
+    latest = working.iloc[-1]
+    recent_60 = working.tail(60)
+    recent_120 = working.tail(120)
+    recent_20 = working.tail(20)
+    latest_volume = _score_first_float(latest.get("volume"), default=0.0)
+    avg_volume_20 = _score_first_float(recent_20["volume"].mean(), default=0.0)
+
+    return {
+        "price": _score_first_float(latest.get("close"), default=0.0),
+        "change_pct": _score_first_float(latest.get("change_pct"), default=0.0),
+        "turnover_rate": _score_first_float(latest.get("turnover_rate"), default=0.0),
+        "volume_ratio": (latest_volume / avg_volume_20) if latest_volume and avg_volume_20 else 0.0,
+        "ma5": _score_first_float(working["close"].tail(5).mean(), default=0.0),
+        "ma10": _score_first_float(working["close"].tail(10).mean(), default=0.0),
+        "ma20": _score_first_float(working["close"].tail(20).mean(), default=0.0),
+        "ma60": _score_first_float(working["close"].tail(60).mean(), default=0.0),
+        "high_60d": _score_first_float(recent_60["high"].max(), default=0.0),
+        "low_60d": _score_first_float(recent_60["low"].min(), default=0.0),
+        "high_120d": _score_first_float(recent_120["high"].max(), default=0.0),
+        "low_120d": _score_first_float(recent_120["low"].min(), default=0.0),
+    }
+
+
+def _score_input(market_data: Mapping[str, Any], history_features: Mapping[str, Any]) -> dict[str, float]:
+    market_data = _score_mapping(market_data)
+    history_features = _score_mapping(history_features)
+    price = _score_first_number(
+        market_data.get("price"),
+        market_data.get("latest_price"),
+        market_data.get("close"),
+        history_features.get("price"),
+    )
+    high = _score_first_number(market_data.get("high"), history_features.get("high_60d"), price)
+    low = _score_first_number(market_data.get("low"), history_features.get("low_60d"), price)
+
+    return {
+        "price": price,
+        "change_pct": _score_first_float(market_data.get("change_pct"), market_data.get("pct_change"), history_features.get("change_pct")),
+        "volume_ratio": _score_first_float(market_data.get("volume_ratio"), history_features.get("volume_ratio")),
+        "turnover_rate": _score_first_float(market_data.get("turnover_rate"), history_features.get("turnover_rate")),
+        "main_net_inflow": _score_first_float(market_data.get("main_net_inflow"), default=0.0),
+        "ma5": _score_first_float(market_data.get("ma5"), history_features.get("ma5"), price),
+        "ma10": _score_first_float(market_data.get("ma10"), history_features.get("ma10"), price),
+        "ma20": _score_first_float(market_data.get("ma20"), history_features.get("ma20"), price),
+        "ma60": _score_first_float(market_data.get("ma60"), history_features.get("ma60"), price),
+        "high_60d": _score_first_number(market_data.get("high_60d"), history_features.get("high_60d"), high),
+        "low_60d": _score_first_number(market_data.get("low_60d"), history_features.get("low_60d"), low),
+        "high_120d": _score_first_number(market_data.get("high_120d"), history_features.get("high_120d"), high),
+        "low_120d": _score_first_number(market_data.get("low_120d"), history_features.get("low_120d"), low),
+    }
+
+
+def _passes_opportunity_filters(score: Mapping[str, Any], score_input: Mapping[str, Any]) -> bool:
+    sub_scores = _score_mapping(score.get("sub_scores"))
+    total_score = int(score_safe_float(score.get("total_score"), default=0.0))
+    low_score = int(score_safe_float(sub_scores.get("low"), default=0.0))
+    trend_score = int(score_safe_float(sub_scores.get("trend"), default=0.0))
+    change_pct = score_safe_float(score_input.get("change_pct"), default=0.0)
+    turnover_rate = score_safe_float(score_input.get("turnover_rate"), default=0.0)
+    return (
+        total_score >= 60
+        and low_score >= 18
+        and trend_score >= 10
+        and change_pct <= 8
+        and turnover_rate <= 15
+    )
+
+
+def _score_signal(level: str) -> str:
+    if level == "A":
+        return "推荐"
+    if level in {"B", "C"}:
+        return "观察"
+    return "谨慎"
+
+
+def _build_scored_opportunity(
+    *,
+    code: str,
+    name: str,
+    market_data: Mapping[str, Any],
+    score_input: Mapping[str, Any],
+    score: Mapping[str, Any],
+) -> dict[str, Any]:
+    sub_scores = _score_mapping(score.get("sub_scores"))
+    total_score = int(score_safe_float(score.get("total_score"), default=0.0))
+    low_score = int(score_safe_float(sub_scores.get("low"), default=0.0))
+    trend_score = int(score_safe_float(sub_scores.get("trend"), default=0.0))
+    level = str(score.get("level") or "D")
+    conclusion = str(score.get("conclusion") or "")
+    signal = _score_signal(level)
+    price = score_safe_float(score_input.get("price"), default=0.0)
+    high_60d = score_safe_float(score_input.get("high_60d"), default=0.0)
+    drawdown = max(0.0, (high_60d - price) / high_60d * 100) if price and high_60d else 0.0
+
+    return {
+        "symbol": code,
+        "name": str(market_data.get("name") or name or code),
+        "price": price,
+        "change_pct": score_safe_float(score_input.get("change_pct"), default=0.0),
+        "turnover_rate": score_safe_float(score_input.get("turnover_rate"), default=0.0),
+        "score": {
+            "total_score": total_score,
+            "level": level,
+            "sub_scores": dict(sub_scores),
+            "conclusion": conclusion,
+            "tags": list(score.get("tags", []) or []),
+        },
+        "code": code,
+        "score_value": total_score,
+        "signal": signal,
+        "tag": signal,
+        "reason": conclusion,
+        "summary": conclusion,
+        "suggestion": conclusion,
+        "metrics": {
+            "drawdown": f"{drawdown:.1f}%",
+            "trend": f"趋势分 {trend_score}",
+            "risk": "中" if total_score >= 65 else "中高",
+        },
+        "features": {
+            "volume_spike": score_safe_float(score_input.get("volume_ratio"), default=0.0) >= 1.2,
+            "trend_turn": trend_score >= 10,
+            "drawdown": f"{drawdown:.1f}%",
+            "stop_falling": low_score >= 18,
+            "bullish_break": score_safe_float(score_input.get("change_pct"), default=0.0) > 0,
+            "risk": "中" if total_score >= 65 else "中高",
+        },
+    }
+
+
+def _score_candidate(stock: Mapping[str, Any]) -> dict[str, Any] | None:
+    code = normalize_code(stock.get("code", ""))
+    if not code:
+        return None
+    name = str(stock.get("name") or code).strip()
+
+    market_data: dict[str, Any] = {}
+    try:
+        fetched = fetch_stock_data(code, name)
+        if isinstance(fetched, dict) and fetched.get("status") != "error":
+            market_data = fetched
+    except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.warning("Failed to fetch market data for opportunity %s %s: %s", code, name, exc)
+
+    history_features = _score_history_features(_score_fetch_history(code))
+    score_input = _score_input(market_data, history_features)
+    score = _STOCK_SCORE_SERVICE.score(score_input)
+    if not _passes_opportunity_filters(score, score_input):
+        return None
+
+    return _build_scored_opportunity(
+        code=code,
+        name=name,
+        market_data=market_data,
+        score_input=score_input,
+        score=score,
+    )
+
+
+def _calculate_scored_opportunities(limit: int = 10) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for stock in _score_candidate_pool():
+        try:
+            item = _score_candidate(stock)
+        except Exception as exc:  # pragma: no cover - runtime safety
+            LOGGER.warning("Failed to score opportunity candidate %s: %s", stock, exc)
+            item = None
+        if item is not None:
+            items.append(item)
+
+    items.sort(
+        key=lambda item: int(score_safe_float(_score_mapping(item.get("score")).get("total_score"), default=0.0)),
+        reverse=True,
+    )
+    return items[: max(0, int(limit))]
+
+
+def get_opportunities(limit: int = 10) -> list[dict[str, Any]]:
+    """Return the filtered low-position opportunity pool based on StockScoreService."""
+    now = datetime.now()
+    cached_at = _LOW_POOL_CACHE.get("timestamp")
+    cached_items = _LOW_POOL_CACHE.get("items")
+    if cached_at is not None and cached_items is not None:
+        age_seconds = (now - cached_at).total_seconds()
+        if age_seconds <= LOW_POOL_CACHE_SECONDS:
+            return list(cached_items)[: max(0, int(limit))]
+
+    items = _calculate_scored_opportunities(limit=limit)
+    _LOW_POOL_CACHE["timestamp"] = now
+    _LOW_POOL_CACHE["items"] = list(items)
+    return items
+
+
 def get_low_opportunity_pool() -> list[dict[str, Any]]:
-    """Return the sorted low-position opportunity list."""
-    return _get_effective_low_pool()
+    """Return the low-position opportunity list for existing endpoints."""
+    return get_opportunities(limit=10)
 
 
 def get_auto_recommendation() -> dict[str, Any]:
     """Return the highest-scored opportunity from the current pool."""
-    pool = _get_effective_low_pool()
+    pool = get_opportunities(limit=10)
     if not pool:
         return {}
-    return max(pool, key=lambda item: int(item.get("score", 0)))
+    return max(
+        pool,
+        key=lambda item: int(score_safe_float(_score_mapping(item.get("score")).get("total_score"), default=0.0)),
+    )
 
 
 def get_opportunity_detail(code: str) -> dict[str, Any] | None:
-    """Return one detailed low-position opportunity item by code."""
-    normalized_code = str(code).strip()
-    return next((item for item in _get_effective_low_pool() if item["code"] == normalized_code), None)
+    """Return one low-position opportunity item by code."""
+    normalized_code = normalize_code(code)
+    return next((item for item in get_opportunities(limit=10) if item["symbol"] == normalized_code), None)
 
 
 def get_stock_low_opportunity_pool() -> list[dict[str, Any]]:
-    """Expose the same real low-position stock pool to the stock tab."""
-    return _get_effective_low_pool()
+    """Return the same stock opportunity pool for the legacy endpoint."""
+    return get_opportunities(limit=10)
