@@ -324,6 +324,28 @@ function renderHeatmap(results) {
   }).join("");
 }
 
+function firstArrayValue(...values) {
+  return values.find((value) => Array.isArray(value)) || [];
+}
+
+function normalizeRunOncePayload(payload) {
+  const rawData = payload?.data && typeof payload.data === "object" ? payload.data : {};
+  const normalizedData = {
+    ...rawData,
+    results: firstArrayValue(rawData.results, payload?.results, rawData.items, payload?.items),
+    failed_symbols: firstArrayValue(rawData.failed_symbols, payload?.failed_symbols),
+    opportunity_rank: firstArrayValue(rawData.opportunity_rank, payload?.opportunity_rank),
+    style_distribution: firstArrayValue(rawData.style_distribution, payload?.style_distribution),
+    market_sentiment: rawData.market_sentiment || payload?.market_sentiment || {},
+    notification: rawData.notification || payload?.notification || {},
+    elapsed_seconds: rawData.elapsed_seconds ?? payload?.elapsed_seconds ?? 0,
+  };
+  return {
+    ...payload,
+    data: normalizedData,
+  };
+}
+
 function renderStockResults(results) {
   if (!results.length) {
     dom.stockResults.innerHTML = `<div class="empty">本次没有返回个股结果。</div>`;
@@ -1278,9 +1300,9 @@ async function runStockAnalysis() {
   setChip(dom.stockElapsed, "耗时：--");
   setChip(dom.stockNotify, "飞书：--");
   try {
-    const payload = await fetchJson(api.runStocks, { method: "POST", headers: { "Content-Type": "application/json" } });
+    const payload = normalizeRunOncePayload(await fetchJson(api.runStocks, { method: "POST", headers: { "Content-Type": "application/json" } }));
     state.stockPayload = payload;
-    renderStockResults(payload.data?.results || []);
+    renderStockResults(payload.data.results);
     renderHome();
     setChip(dom.stockRunStatus, "分析完成", "good");
     setChip(dom.stockElapsed, `耗时：${num(payload.data?.elapsed_seconds ?? 0, 3)}秒`);
