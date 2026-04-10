@@ -16,10 +16,6 @@ def _is_usable_market_data(data: dict[str, Any]) -> bool:
         return False
     if data.get("latest_price") is None:
         return False
-    if data.get("pct_change") is None:
-        return False
-    if data.get("turnover") is None:
-        return False
     return True
 
 

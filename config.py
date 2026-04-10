@@ -25,6 +25,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip() or "gpt-4.1-mini"
 FEISHU_WEBHOOK = os.getenv("FEISHU_WEBHOOK", "").strip() or ""
 DEFAULT_SCHEDULE_TIME = os.getenv("DEFAULT_SCHEDULE_TIME", "09:00").strip() or "09:00"
+TUSHARE_TOKEN = os.getenv("TUSHARE_TOKEN", "").strip() or ""
 
 # Data provider selection.
 # free: current free data source (AkShare)
@@ -88,6 +89,8 @@ def get_runtime_warnings() -> list[str]:
         warnings.append("未配置 OPENAI_API_KEY，AI 解读将自动降级为规则兜底文本。")
     if not FEISHU_WEBHOOK:
         warnings.append("未配置 FEISHU_WEBHOOK，本次不会推送飞书消息。")
+    if not TUSHARE_TOKEN:
+        warnings.append("未配置 TUSHARE_TOKEN，A股个股行情将无法使用 Tushare 数据源。")
     if DATA_PROVIDER == "ths" and not any([THS_USERNAME and THS_PASSWORD, THS_API_BASE and THS_TOKEN]):
         warnings.append("已切换 DATA_PROVIDER=ths，但尚未配置同花顺接口参数。")
     return warnings
@@ -101,6 +104,7 @@ def get_public_runtime_config() -> dict[str, Any]:
         "data_provider": DATA_PROVIDER,
         "has_openai_api_key": bool(OPENAI_API_KEY),
         "has_feishu_webhook": bool(FEISHU_WEBHOOK),
+        "has_tushare_token": bool(TUSHARE_TOKEN),
         "has_ths_credentials": bool(THS_USERNAME and THS_PASSWORD),
         "has_ths_api_token": bool(THS_API_BASE and THS_TOKEN),
         "env_path": str(ENV_PATH),
@@ -114,6 +118,7 @@ def update_env_config(updates: dict[str, str]) -> dict[str, Any]:
         "OPENAI_MODEL",
         "FEISHU_WEBHOOK",
         "DEFAULT_SCHEDULE_TIME",
+        "TUSHARE_TOKEN",
         "DATA_PROVIDER",
         "THS_USERNAME",
         "THS_PASSWORD",
