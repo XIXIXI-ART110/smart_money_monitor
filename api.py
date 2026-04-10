@@ -15,6 +15,7 @@ from modules.etf_service import analyze_single_etf_service, get_default_etf_list
 from modules.etf_watchlist_service import add_etf, delete_etf, load_etf_watchlist
 from modules.index_service import get_index_detail_service, get_index_options_service, get_indexes_service
 from modules.opportunity_service import (
+    SCOPE_NAMES,
     get_auto_recommendation,
     get_low_opportunity_pool,
     get_opportunities,
@@ -228,16 +229,18 @@ def api_run_once() -> dict[str, Any]:
             {
                 "report_path": result.get("report_path"),
                 "results": result.get("results", []),
+                "failed_symbols": result.get("failed_symbols", []),
                 "elapsed_seconds": result.get("elapsed_seconds"),
             },
         )
 
     return success_response(
-        "run once completed",
+        result.get("message", "run once completed"),
         {
             "report_path": result["report_path"],
             "report_content": result["report_content"],
             "results": result["results"],
+            "failed_symbols": result.get("failed_symbols", []),
             "opportunity_rank": result.get("opportunity_rank", []),
             "elapsed_seconds": result["elapsed_seconds"],
             "market_sentiment": result.get("market_sentiment", {}),
@@ -408,12 +411,19 @@ def get_low_opportunity_api() -> dict[str, Any]:
 
 
 @app.get("/api/opportunities")
-def get_opportunities_api() -> dict[str, Any]:
+def get_opportunities_api(board: str = "all", scope: str = "market") -> dict[str, Any]:
     """Return the StockScoreService-based low-position opportunity pool."""
+    requested_board = str(board or "all").strip().lower()
+    normalized_board = requested_board if requested_board in {"all", "gem", "sz_main", "sh_main", "star"} else "all"
+    requested_scope = str(scope or "market").strip().lower()
+    normalized_scope = requested_scope if requested_scope in {"market", "watchlist"} else "market"
     return success_response(
         "opportunities loaded",
         {
-            "items": get_opportunities(limit=10),
+            "scope": normalized_scope,
+            "scope_name": SCOPE_NAMES.get(normalized_scope, "全市场"),
+            "board": normalized_board,
+            "items": get_opportunities(limit=10, board=normalized_board, scope=normalized_scope),
         },
     )
 

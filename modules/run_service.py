@@ -430,6 +430,7 @@ def run_once_service(
             "report_path": None,
             "report_content": "",
             "results": [],
+            "failed_symbols": [],
             "opportunity_rank": [],
             "elapsed_seconds": round(time.perf_counter() - start_time, 3),
             "notification": {
@@ -439,6 +440,7 @@ def run_once_service(
         }
 
     results: list[dict[str, Any]] = []
+    failed_symbol_set: set[str] = set()
     stock_executor = ThreadPoolExecutor(
         max_workers=max(1, min(max_workers, len(stocks))),
         thread_name_prefix="run-once-stock",
@@ -456,6 +458,7 @@ def run_once_service(
         for stock in stocks
     }
     stock_loop_started = time.perf_counter()
+    stock_loop_timed_out = False
 
     try:
         try:
@@ -466,20 +469,32 @@ def run_once_service(
                 try:
                     result = future.result()
                 except Exception as exc:  # pragma: no cover - runtime safety
-                    LOGGER.exception("Unhandled stock future failure for %s %s: %s", code, name, exc)
-                    result = _build_error_result(code, name, str(exc))
+                    LOGGER.warning("Stock %s %s failed and was skipped: %s", code, name, exc, exc_info=True)
+                    failed_symbol_set.add(code)
+                    continue
+
+                if result.get("status") != "ok":
+                    error_message = str(result.get("error") or "unknown stock processing error")
+                    LOGGER.warning("Stock %s %s returned error result and was skipped: %s", code, name, error_message)
+                    failed_symbol_set.add(code)
+                    continue
                 results.append(result)
         except FutureTimeoutError:
+            stock_loop_timed_out = True
             LOGGER.warning("Run-once stock loop timed out after %.2fs.", total_timeout_seconds)
     finally:
-        unfinished_stocks = [stock for future, stock in future_map.items() if not future.done()]
+        unfinished_stocks = (
+            list(future_map.values())
+            if stock_loop_timed_out
+            else [stock for future, stock in future_map.items() if not future.done()]
+        )
         stock_executor.shutdown(wait=False, cancel_futures=True)
 
     for stock in unfinished_stocks:
         code = normalize_code(stock["code"])
         name = stock.get("name", code)
         LOGGER.warning("Stock %s %s exceeded overall run timeout and was skipped.", code, name)
-        results.append(_build_error_result(code, name, "单只股票处理超时，已跳过"))
+        failed_symbol_set.add(code)
 
     LOGGER.info(
         "Stock processing finished in %.3fs. completed=%s total=%s",
@@ -489,6 +504,12 @@ def run_once_service(
     )
 
     results = sorted(results, key=lambda item: int(item.get("score", 0)), reverse=True)
+    failed_symbols = [
+        code
+        for code in dict.fromkeys(normalize_code(stock["code"]) for stock in stocks)
+        if code in failed_symbol_set
+    ]
+    message = "全部股票获取失败" if not results and failed_symbols else "run once completed"
 
     sentiment_started = time.perf_counter()
     opportunity_rank = _build_opportunity_rank(results)
@@ -543,10 +564,11 @@ def run_once_service(
 
     return {
         "ok": True,
-        "message": "run once completed",
+        "message": message,
         "report_path": _to_relative_path(report_path),
         "report_content": report_content,
         "results": results,
+        "failed_symbols": failed_symbols,
         "opportunity_rank": opportunity_rank,
         "elapsed_seconds": elapsed_seconds,
         "market_sentiment": market_sentiment,

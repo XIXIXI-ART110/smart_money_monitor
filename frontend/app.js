@@ -6,6 +6,9 @@ const state = {
   activeIndexDetail: null,
   isIndexModalOpen: false,
   opportunityMode: "stock",
+  opportunityScope: "market",
+  opportunityBoard: "all",
+  opportunityRequestId: 0,
   indexOpportunityItems: [],
   stockOpportunityItems: [],
   lowOpportunityItems: [],
@@ -53,6 +56,8 @@ const dom = {
   indexDetailPanel: document.getElementById("indexDetailPanel"),
   opportunityStatus: document.getElementById("opportunityStatus"),
   opportunityTabs: document.getElementById("opportunityTabs"),
+  opportunityScopeTabs: document.getElementById("opportunityScopeTabs"),
+  opportunityBoardTabs: document.getElementById("opportunityBoardTabs"),
   opportunityRecommendCard: document.getElementById("opportunityRecommendCard"),
   opportunityPoolList: document.getElementById("opportunityPoolList"),
   opportunityDetailPanel: document.getElementById("opportunityDetailPanel"),
@@ -94,13 +99,39 @@ const api = {
   indexes: apiPath("/api/indexes"),
   indexOptions: apiPath("/api/indexes/options"),
   indexDetail: (code) => apiPath(`/api/indexes/detail?code=${encodeURIComponent(code)}`),
-  opportunities: apiPath("/api/opportunities"),
+  opportunities: (scope = "market", board = "all") => apiPath(`/api/opportunities?scope=${encodeURIComponent(scope)}&board=${encodeURIComponent(board)}`),
   lowOpportunity: apiPath("/api/opportunity/low"),
   stockLowOpportunity: apiPath("/api/opportunity/stock_low"),
   opportunityRecommend: apiPath("/api/opportunity/recommend"),
   opportunityDetail: (code) => apiPath(`/api/opportunity/detail?code=${encodeURIComponent(code)}`),
   searchStocks: (keyword) => apiPath(`/api/search-stocks?q=${encodeURIComponent(keyword)}`)
 };
+
+const OPPORTUNITY_SCOPE_LABELS = {
+  market: "全市场",
+  watchlist: "自选股"
+};
+
+const OPPORTUNITY_BOARD_LABELS = {
+  all: "全部",
+  gem: "创业板",
+  sz_main: "深市主板",
+  sh_main: "沪市主板",
+  star: "科创板"
+};
+
+const NAV_VIEW_STORAGE_KEY = "smart-money-monitor:last-view";
+const DEFAULT_VIEW_ID = "etfView";
+const NAV_VIEW_KEY_TO_ID = {
+  home: "homeView",
+  stock: "stockView",
+  etf: "etfView",
+  opportunities: "opportunityView",
+  heatmap: "heatView"
+};
+const NAV_VIEW_ID_TO_KEY = Object.fromEntries(
+  Object.entries(NAV_VIEW_KEY_TO_ID).map(([key, id]) => [id, key])
+);
 
 const STATIC_LOW_OPPORTUNITY_ITEMS = [
   {
@@ -198,9 +229,44 @@ function setChip(el, text, toneName = "") {
   el.className = `chip ${toneName}`.trim();
 }
 
-function switchView(id) {
-  document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === id));
-  dom.navButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.view === id));
+function normalizeViewId(view) {
+  const rawView = String(view || "").trim();
+  const id = NAV_VIEW_KEY_TO_ID[rawView] || rawView;
+  const hasNavButton = dom.navButtons.some((button) => button.dataset.view === id);
+  return hasNavButton && document.getElementById(id) ? id : "";
+}
+
+function persistActiveView(id) {
+  const key = NAV_VIEW_ID_TO_KEY[id];
+  if (!key) return;
+  try {
+    localStorage.setItem(NAV_VIEW_STORAGE_KEY, key);
+  } catch (error) {
+    console.warn("Failed to persist active view", error);
+  }
+}
+
+function readStoredViewId() {
+  try {
+    return normalizeViewId(localStorage.getItem(NAV_VIEW_STORAGE_KEY));
+  } catch (error) {
+    console.warn("Failed to read active view", error);
+    return "";
+  }
+}
+
+function switchView(id, options = {}) {
+  const normalizedId = normalizeViewId(id) || DEFAULT_VIEW_ID;
+  const persist = options.persist !== false;
+  document.querySelectorAll(".view").forEach((view) => view.classList.toggle("active", view.id === normalizedId));
+  dom.navButtons.forEach((btn) => btn.classList.toggle("active", btn.dataset.view === normalizedId));
+  if (persist) {
+    persistActiveView(normalizedId);
+  }
+}
+
+function restoreActiveView() {
+  switchView(readStoredViewId() || DEFAULT_VIEW_ID, { persist: false });
 }
 
 function renderWatchList(target, items) {
@@ -373,7 +439,7 @@ function opportunityScoreObject(item) {
 
 function opportunityScoreValue(item) {
   const score = opportunityScoreObject(item);
-  return Number(score.total_score ?? item?.score_value ?? item?.score ?? 0);
+  return Number(score.board_total ?? item?.board_total ?? item?.score_value ?? score.total_score ?? item?.score ?? 0);
 }
 
 function opportunitySignal(item) {
@@ -395,11 +461,91 @@ function opportunitySummary(item) {
   return item?.summary || score.conclusion || "暂无总结";
 }
 
+function opportunityBoardLabel(item) {
+  return item?.board_name || (item?.board ? OPPORTUNITY_BOARD_LABELS[item.board] : "") || "";
+}
+
+function opportunityScopeLabel(item) {
+  if (state.opportunityMode !== "stock") return "";
+  return item?.scope_name || (item?.scope ? OPPORTUNITY_SCOPE_LABELS[item.scope] : "") || OPPORTUNITY_SCOPE_LABELS[state.opportunityScope] || "";
+}
+
+function firstSentence(text, fallback = "暂无摘要") {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return fallback;
+  const [sentence] = normalized.split(/[。；;！!？?]/).filter(Boolean);
+  const brief = sentence || normalized;
+  return brief.length > 46 ? `${brief.slice(0, 46)}...` : brief;
+}
+
+function opportunityBrief(item) {
+  const summary = opportunitySummary(item);
+  const reason = opportunityReason(item);
+  const text = summary && summary !== "暂无总结" ? summary : reason;
+  return firstSentence(text, "暂无摘要");
+}
+
+function opportunityReasonTags(item, limit = 3) {
+  const score = opportunityScoreObject(item);
+  const rawTags = [
+    ...(Array.isArray(score.tags) ? score.tags : []),
+    ...(Array.isArray(item?.tags) ? item.tags : []),
+    ...(Array.isArray(item?.signals) ? item.signals : []),
+  ];
+  const tags = [];
+  rawTags.forEach((tag) => {
+    const label = firstSentence(tag, "");
+    if (label && !tags.includes(label)) tags.push(label);
+  });
+
+  if (!tags.length) {
+    const features = item?.features || {};
+    if (features.trend_turn) tags.push("趋势转强");
+    if (features.volume_spike) tags.push("量能放大");
+    if (features.stop_falling) tags.push("止跌确认");
+    if (features.bullish_break) tags.push("阳线突破");
+  }
+
+  return tags.slice(0, limit);
+}
+
+function opportunityDetailParagraphs(item) {
+  const brief = opportunityBrief(item);
+  const rows = [
+    opportunityReason(item),
+    opportunitySummary(item),
+    item?.suggestion,
+  ].map((text) => String(text || "").trim()).filter((text) => {
+    if (!text || ["暂无理由", "暂无总结"].includes(text)) return false;
+    return firstSentence(text, "") !== brief;
+  });
+  return [...new Set(rows)];
+}
+
 function renderOpportunityTabs() {
   if (!dom.opportunityTabs) return;
   dom.opportunityTabs.querySelectorAll("[data-opportunity-tab]").forEach((button) => {
     button.classList.toggle("active", button.dataset.opportunityTab === state.opportunityMode);
   });
+  dom.opportunityScopeTabs?.querySelectorAll("[data-opportunity-scope]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.opportunityScope === state.opportunityScope);
+  });
+  dom.opportunityBoardTabs?.querySelectorAll("[data-opportunity-board]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.opportunityBoard === state.opportunityBoard);
+  });
+}
+
+function setOpportunitySectionVisible(element, isVisible) {
+  if (!element) return;
+  element.hidden = !isVisible;
+  element.style.display = isVisible ? "" : "none";
+}
+
+function syncOpportunityModeSections() {
+  const isStockMode = state.opportunityMode === "stock";
+  setOpportunitySectionVisible(dom.opportunityScopeTabs, isStockMode);
+  setOpportunitySectionVisible(dom.opportunityBoardTabs, isStockMode);
+  setOpportunitySectionVisible(dom.opportunityDetailPanel, isStockMode);
 }
 
 function fetchJson(url, options) {
@@ -441,17 +587,24 @@ function buildAreaChart(points, width = 760, height = 220) {
 function renderRecommendedOpportunity() {
   const item = state.recommendedOpportunity;
   if (!item) {
-    dom.opportunityRecommendCard.innerHTML = `<div class="empty">今日自动推荐暂不可用。</div>`;
+    dom.opportunityRecommendCard.innerHTML = `<div class="empty">当前筛选条件下暂未发现明确机会，可切换范围或板块继续查看。</div>`;
     return;
   }
 
   const symbol = opportunitySymbol(item);
   const scoreValue = opportunityScoreValue(item);
   const signal = opportunitySignal(item);
+  const scopeLabel = opportunityScopeLabel(item);
+  const boardLabel = opportunityBoardLabel(item);
+  const reasonTags = opportunityReasonTags(item);
   dom.opportunityRecommendCard.innerHTML = `
     <div class="recommend-main">
       <div class="chips">
-        <span class="chip ${signalTone(signal)}">今日自动推荐</span>
+        <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
+        <span class="chip">今日先看</span>
+        ${scopeLabel ? `<span class="chip">${esc(scopeLabel)}</span>` : ""}
+        ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
+        ${item.badge ? `<span class="chip">${esc(item.badge)}</span>` : ""}
       </div>
       <div>
         <h3>${esc(item.name)}</h3>
@@ -462,10 +615,13 @@ function renderRecommendedOpportunity() {
           <small class="sub">综合评分</small>
           <strong>${esc(scoreValue)}</strong>
         </div>
-        <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
       </div>
-      <div class="recommend-text">${esc(opportunityReason(item))}</div>
-      <div class="recommend-text">${esc(opportunitySummary(item))}</div>
+      <div class="recommend-text">${esc(opportunityBrief(item))}</div>
+      ${reasonTags.length ? `
+        <div class="chips">
+          ${reasonTags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
+        </div>
+      ` : ""}
     </div>
   `;
 }
@@ -473,14 +629,42 @@ function renderRecommendedOpportunity() {
 function renderOpportunityPool() {
   const items = state.lowOpportunityItems || [];
   if (!items.length) {
-    dom.opportunityPoolList.innerHTML = `<div class="empty">当前暂无低位机会池数据。</div>`;
+    dom.opportunityPoolList.innerHTML = `<div class="empty">当前筛选条件下暂无低位机会，可切换范围或板块查看更多候选。</div>`;
     return;
   }
 
-  dom.opportunityPoolList.innerHTML = items.map((item) => {
+  if (state.opportunityMode === "stock" && items.length === 1) {
+    const item = items[0] || {};
+    const scopeLabel = opportunityScopeLabel(item);
+    const boardLabel = opportunityBoardLabel(item);
+    dom.opportunityPoolList.innerHTML = `
+      <div class="empty">
+        <div class="chips" style="justify-content: center; margin-bottom: 10px;">
+          ${scopeLabel ? `<span class="chip">${esc(scopeLabel)}</span>` : ""}
+          ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
+          ${item.badge ? `<span class="chip">${esc(item.badge)}</span>` : ""}
+        </div>
+        <strong>当前板块仅筛出 1 条机会</strong>
+        <p style="margin: 8px 0 0;">已在左侧推荐和下方详情区展示，可切换其他板块查看更多候选。</p>
+      </div>
+    `;
+    return;
+  }
+
+  const boardNote = state.opportunityMode === "stock" && state.opportunityBoard === "all"
+    ? `
+      <div class="empty" style="padding: 14px; text-align: left;">
+        <strong>全部板块已按板块策略汇总</strong>
+        <p style="margin: 6px 0 0;">卡片上的板块标签用于区分来源，可切换单一板块进一步聚焦。</p>
+      </div>
+    `
+    : "";
+
+  const cards = items.map((item, index) => {
     const symbol = opportunitySymbol(item);
     const scoreValue = opportunityScoreValue(item);
     const signal = opportunitySignal(item);
+    const boardLabel = opportunityBoardLabel(item);
     return `
     <article class="opportunity-pool-item ${state.activeOpportunityCode === symbol ? "active" : ""}" data-opportunity-code="${esc(symbol)}">
       <div class="opportunity-head">
@@ -492,14 +676,28 @@ function renderOpportunityPool() {
       </div>
       <div class="chips">
         <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
+        <span class="chip">第 ${esc(index + 1)}</span>
+        ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
+        ${item.badge ? `<span class="chip">${esc(item.badge)}</span>` : ""}
       </div>
-      <div class="opportunity-reason">${esc(opportunityReason(item))}</div>
+      <div class="opportunity-reason">${esc(opportunityBrief(item))}</div>
     </article>
   `;
   }).join("");
+  dom.opportunityPoolList.innerHTML = `${boardNote}${cards}`;
 }
 
 function renderOpportunityDetail() {
+  if (state.opportunityMode !== "stock") {
+    if (dom.opportunityDetailPanel) {
+      dom.opportunityDetailPanel.innerHTML = "";
+      setOpportunitySectionVisible(dom.opportunityDetailPanel, false);
+    }
+    return;
+  }
+
+  setOpportunitySectionVisible(dom.opportunityDetailPanel, true);
+
   const item = state.activeOpportunityDetail;
   if (!item) {
     dom.opportunityDetailPanel.innerHTML = `<div class="empty">点击某张机会卡片后，这里显示详细信息。</div>`;
@@ -517,18 +715,28 @@ function renderOpportunityDetail() {
   const score = opportunityScoreObject(item);
   const subScores = score.sub_scores || {};
   const tags = score.tags || item.tags || item.signals || [];
+  const scopeLabel = opportunityScopeLabel(item);
+  const boardLabel = opportunityBoardLabel(item);
+  const detailParagraphs = opportunityDetailParagraphs(item);
   dom.opportunityDetailPanel.innerHTML = `
     <div class="chips">
       <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
       <span class="chip blue">综合评分 ${esc(scoreValue)}</span>
+      ${scopeLabel ? `<span class="chip">${esc(scopeLabel)}</span>` : ""}
+      ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
+      ${item.badge ? `<span class="chip">${esc(item.badge)}</span>` : ""}
       ${score.level ? `<span class="chip blue">等级 ${esc(score.level)}</span>` : ""}
     </div>
     <div style="margin-top:14px;">
       <h3>${esc(item.name)}</h3>
       <div class="sub">${esc(symbol)}</div>
     </div>
-    <div class="recommend-text" style="margin-top:12px;">${esc(opportunityReason(item))}</div>
-    <div class="recommend-text" style="margin-top:8px;">${esc(opportunitySummary(item))}</div>
+    <div style="margin-top:12px;">
+      <div class="sub">详细分析</div>
+      ${detailParagraphs.length
+        ? detailParagraphs.map((text) => `<div class="recommend-text" style="margin-top:8px;">${esc(text)}</div>`).join("")
+        : `<div class="recommend-text" style="margin-top:8px;">暂无更多展开说明，可重点参考下方低位、量能、趋势和资金细项。</div>`}
+    </div>
     <div class="opportunity-metrics">
       <div class="opportunity-metric">
         <small>回撤幅度</small>
@@ -845,6 +1053,7 @@ async function refreshIndexBoardData(forceDefaults = false) {
 }
 
 async function loadOpportunityDetail(code, force = false) {
+  if (state.opportunityMode !== "stock") return;
   if (!code) return;
   if (!force && state.activeOpportunityCode === code && state.activeOpportunityDetail) return;
 
@@ -853,37 +1062,59 @@ async function loadOpportunityDetail(code, force = false) {
   dom.opportunityDetailPanel.innerHTML = `<div class="loading"><div><div class="spinner"></div>正在加载机会详情...</div></div>`;
   const target = state.lowOpportunityItems.find((item) => opportunitySymbol(item) === code) || null;
   state.activeOpportunityDetail = target;
+  if (target) {
+    state.recommendedOpportunity = target;
+    renderRecommendedOpportunity();
+  }
   renderOpportunityDetail();
 }
 
 function syncOpportunityView(items, mode) {
   state.opportunityMode = mode;
   state.lowOpportunityItems = [...items];
+  state.activeOpportunityCode = "";
+  state.activeOpportunityDetail = null;
   state.recommendedOpportunity = [...items]
     .sort((left, right) => opportunityScoreValue(right) - opportunityScoreValue(left))[0] || null;
   renderOpportunityTabs();
+  syncOpportunityModeSections();
   renderRecommendedOpportunity();
   renderOpportunityPool();
+  renderOpportunityDetail();
 }
 
-async function applyOpportunityMode(mode) {
+async function applyOpportunityMode(mode, board = state.opportunityBoard, scope = state.opportunityScope) {
+  const requestId = ++state.opportunityRequestId;
   if (mode === "stock") {
-    setChip(dom.opportunityStatus, "正在加载个股机会...", "blue");
+    state.opportunityScope = scope;
+    state.opportunityBoard = board;
+    state.opportunityMode = "stock";
+    renderOpportunityTabs();
+    syncOpportunityModeSections();
+    const scopeLabel = OPPORTUNITY_SCOPE_LABELS[scope] || "全市场";
+    const boardLabel = OPPORTUNITY_BOARD_LABELS[board] || "全部";
+    setChip(dom.opportunityStatus, `正在加载${scopeLabel} · ${boardLabel}个股机会...`, "blue");
     dom.opportunityRecommendCard.innerHTML = `<div class="loading"><div><div class="spinner"></div>正在准备个股推荐...</div></div>`;
     dom.opportunityPoolList.innerHTML = `<div class="empty">个股机会列表加载中...</div>`;
     dom.opportunityDetailPanel.innerHTML = `<div class="empty">点击某张个股机会卡片后，这里显示详细信息。</div>`;
 
     try {
-      const payload = await fetchJson(api.opportunities);
+      const payload = await fetchJson(api.opportunities(scope, board));
+      if (requestId !== state.opportunityRequestId || state.opportunityMode !== "stock") return;
+      state.opportunityScope = payload.data?.scope || scope;
+      state.opportunityBoard = payload.data?.board || board;
       state.stockOpportunityItems = payload.data?.items || [];
       syncOpportunityView(state.stockOpportunityItems, "stock");
       const nextCode = opportunitySymbol(state.recommendedOpportunity) || opportunitySymbol(state.lowOpportunityItems[0]) || "";
       if (nextCode) {
         await loadOpportunityDetail(nextCode, true);
       }
-      setChip(dom.opportunityStatus, `已加载 ${state.lowOpportunityItems.length} 个个股机会`, "good");
+      const loadedScopeLabel = payload.data?.scope_name || OPPORTUNITY_SCOPE_LABELS[state.opportunityScope] || scopeLabel;
+      const loadedBoardLabel = OPPORTUNITY_BOARD_LABELS[state.opportunityBoard] || boardLabel;
+      setChip(dom.opportunityStatus, `已加载 ${state.lowOpportunityItems.length} 个${loadedScopeLabel} · ${loadedBoardLabel}个股机会`, "good");
       return;
     } catch (error) {
+      if (requestId !== state.opportunityRequestId || state.opportunityMode !== "stock") return;
       setChip(dom.opportunityStatus, `个股机会加载失败：${error.message}`, "bad");
       dom.opportunityRecommendCard.innerHTML = `<div class="empty">个股推荐加载失败：${esc(error.message)}</div>`;
       dom.opportunityPoolList.innerHTML = `<div class="empty">个股机会列表加载失败：${esc(error.message)}</div>`;
@@ -892,11 +1123,8 @@ async function applyOpportunityMode(mode) {
     }
   }
 
+  state.opportunityMode = "index";
   syncOpportunityView(state.indexOpportunityItems, "index");
-  const nextCode = opportunitySymbol(state.recommendedOpportunity) || opportunitySymbol(state.lowOpportunityItems[0]) || "";
-  if (nextCode) {
-    await loadOpportunityDetail(nextCode, true);
-  }
   setChip(dom.opportunityStatus, `静态演示已加载 ${state.lowOpportunityItems.length} 个指数机会`, "good");
 }
 
@@ -1136,6 +1364,18 @@ dom.opportunityTabs?.addEventListener("click", (event) => {
   applyOpportunityMode(button.dataset.opportunityTab || "index");
 });
 
+dom.opportunityScopeTabs?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-opportunity-scope]");
+  if (!button) return;
+  applyOpportunityMode("stock", state.opportunityBoard, button.dataset.opportunityScope || "market");
+});
+
+dom.opportunityBoardTabs?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-opportunity-board]");
+  if (!button) return;
+  applyOpportunityMode("stock", button.dataset.opportunityBoard || "all", state.opportunityScope);
+});
+
 dom.opportunityPoolList.addEventListener("click", (event) => {
   const card = event.target.closest(".opportunity-pool-item");
   if (!card) return;
@@ -1144,4 +1384,5 @@ dom.opportunityPoolList.addEventListener("click", (event) => {
 
 window.deleteStock = deleteStock;
 
+restoreActiveView();
 Promise.allSettled([loadStocks(), refreshIndexBoardData(true), loadOpportunityWidgets()]).then(renderHome);

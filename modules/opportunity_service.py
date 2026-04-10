@@ -111,6 +111,87 @@ _LOW_POOL_CACHE: dict[str, Any] = {
     "timestamp": None,
     "items": None,
 }
+_SCORED_OPPORTUNITY_CACHE: dict[str, Any] = {}
+
+SUPPORTED_OPPORTUNITY_BOARDS = {"all", "gem", "sz_main", "sh_main", "star"}
+SUPPORTED_OPPORTUNITY_SCOPES = {"market", "watchlist"}
+SCOPE_NAMES = {
+    "market": "全市场",
+    "watchlist": "自选股",
+}
+BOARD_NAMES = {
+    "all": "全部",
+    "gem": "创业板",
+    "sz_main": "深市主板",
+    "sh_main": "沪市主板",
+    "star": "科创板",
+    "other": "其他",
+}
+SUB_SCORE_MAX = {
+    "low": 40.0,
+    "trend": 25.0,
+    "volume": 25.0,
+    "capital": 10.0,
+}
+BOARD_STRATEGIES: dict[str, dict[str, Any]] = {
+    "all": {
+        "weights": {"low": 0.40, "trend": 0.25, "volume": 0.25, "capital": 0.10},
+        "thresholds": {"board_total": 50, "low": 12, "trend": 8},
+        "sort": ("board_total", "low", "trend", "volume", "capital"),
+        "fallback_limit": 5,
+        "badge": "综合低位机会",
+    },
+    "gem": {
+        "weights": {"low": 0.30, "trend": 0.30, "volume": 0.25, "capital": 0.15},
+        "thresholds": {"board_total": 48, "trend": 10, "volume": 8, "low": 10},
+        "sort": ("trend", "volume", "board_total", "low", "capital"),
+        "fallback_sort": ("trend", "volume", "board_total", "low", "capital"),
+        "fallback_limit": 5,
+        "badge": "趋势量能优先",
+        "empty_mode": "watchlist",
+    },
+    "sz_main": {
+        "weights": {"low": 0.35, "trend": 0.25, "volume": 0.20, "capital": 0.20},
+        "thresholds": {"board_total": 45, "low": 12, "trend": 8},
+        "sort": ("low", "trend", "board_total", "capital", "volume"),
+        "fallback_sort": ("board_total", "low", "trend", "capital", "volume"),
+        "fallback_limit": 5,
+        "badge": "低位修复优先",
+        "empty_mode": "fallback",
+    },
+    "sh_main": {
+        "weights": {"low": 0.40, "trend": 0.20, "volume": 0.15, "capital": 0.25},
+        "thresholds": {"board_total": 43, "low": 14, "capital": 6},
+        "sort": ("low", "capital", "board_total", "trend", "volume"),
+        "fallback_sort": ("low_capital", "low", "capital", "board_total", "trend", "volume"),
+        "fallback_limit": 3,
+        "badge": "低位资金优先",
+        "empty_mode": "fallback",
+    },
+    "star": {
+        "weights": {"low": 0.25, "trend": 0.35, "volume": 0.25, "capital": 0.15},
+        "thresholds": {"board_total": 50, "trend": 12, "volume": 8},
+        "sort": ("trend", "volume", "board_total", "low", "capital"),
+        "fallback_sort": ("trend", "volume", "board_total", "low", "capital"),
+        "fallback_limit": 5,
+        "badge": "弹性趋势优先",
+        "empty_mode": "watchlist",
+    },
+}
+
+
+def identify_stock_board(code: str) -> str:
+    """Identify the stock board by code prefix."""
+    normalized_code = normalize_code(code)
+    if normalized_code.startswith("300"):
+        return "gem"
+    if normalized_code.startswith(("000", "001", "002", "003")):
+        return "sz_main"
+    if normalized_code.startswith(("600", "601", "603", "605")):
+        return "sh_main"
+    if normalized_code.startswith("688"):
+        return "star"
+    return "other"
 
 
 def _safe_float(value: Any) -> float | None:
@@ -476,17 +557,28 @@ def _score_numeric_series(dataframe: pd.DataFrame, *names: str) -> pd.Series | N
     return None
 
 
-def _score_candidate_pool() -> list[dict[str, str]]:
-    """Use the current watchlist first; fall back to a small built-in pool."""
-    watchlist = load_watchlist()
-    source = watchlist or DEFAULT_STOCK_POOL
+def _normalize_stock_pool(source: list[dict[str, str]]) -> list[dict[str, str]]:
     candidates: list[dict[str, str]] = []
+    seen_codes: set[str] = set()
     for item in source:
         code = normalize_code(item.get("code", ""))
-        if not code:
+        if not code or code in seen_codes:
             continue
         candidates.append({"code": code, "name": str(item.get("name") or code).strip()})
+        seen_codes.add(code)
     return candidates
+
+
+def _normalize_opportunity_scope(scope: str | None) -> str:
+    normalized_scope = str(scope or "market").strip().lower()
+    return normalized_scope if normalized_scope in SUPPORTED_OPPORTUNITY_SCOPES else "market"
+
+
+def _score_candidate_pool(scope: str = "market") -> list[dict[str, str]]:
+    """Select candidate stocks by opportunity scope without changing score logic."""
+    normalized_scope = _normalize_opportunity_scope(scope)
+    source = load_watchlist() if normalized_scope == "watchlist" else DEFAULT_STOCK_POOL
+    return _normalize_stock_pool(source)
 
 
 def _score_fetch_history(code: str) -> pd.DataFrame | None:
@@ -591,6 +683,101 @@ def _passes_opportunity_filters(score: Mapping[str, Any], score_input: Mapping[s
     )
 
 
+def _normalize_opportunity_board(board: str | None) -> str:
+    normalized_board = str(board or "all").strip().lower()
+    return normalized_board if normalized_board in SUPPORTED_OPPORTUNITY_BOARDS else "all"
+
+
+def _strategy_for_board(board: str) -> dict[str, Any]:
+    return BOARD_STRATEGIES.get(board) or BOARD_STRATEGIES["all"]
+
+
+def _board_score_value(item: Mapping[str, Any], field: str) -> float:
+    score = _score_mapping(item.get("score"))
+    sub_scores = _score_mapping(score.get("sub_scores"))
+    if field in {"board_total", "total"}:
+        return score_safe_float(score.get("board_total"), default=0.0)
+    if field in {"base_total", "original_total"}:
+        return score_safe_float(score.get("base_total"), default=score_safe_float(score.get("total_score"), default=0.0))
+    if field == "low_capital":
+        return score_safe_float(sub_scores.get("low"), default=0.0) + score_safe_float(sub_scores.get("capital"), default=0.0)
+    return score_safe_float(sub_scores.get(field), default=0.0)
+
+
+def _calculate_board_total_score(sub_scores: Mapping[str, Any], board: str) -> int:
+    strategy = _strategy_for_board(board)
+    weights = _score_mapping(strategy.get("weights"))
+    weighted_total = 0.0
+    for key, max_score in SUB_SCORE_MAX.items():
+        raw_score = score_safe_float(sub_scores.get(key), default=0.0)
+        component_score = (raw_score / max_score * 100.0) if max_score else 0.0
+        weighted_total += component_score * score_safe_float(weights.get(key), default=0.0)
+    return int(round(max(0.0, min(weighted_total, 100.0))))
+
+
+def _passes_board_filters(item: Mapping[str, Any]) -> bool:
+    board = str(item.get("board") or "other")
+    strategy = _strategy_for_board(board)
+    thresholds = _score_mapping(strategy.get("thresholds"))
+    score = _score_mapping(item.get("score"))
+    sub_scores = _score_mapping(score.get("sub_scores"))
+
+    if _board_score_value(item, "board_total") < score_safe_float(thresholds.get("board_total"), default=0.0):
+        return False
+
+    for key in ("low", "trend", "volume", "capital"):
+        threshold = thresholds.get(key)
+        if threshold is not None and score_safe_float(sub_scores.get(key), default=0.0) < score_safe_float(threshold, default=0.0):
+            return False
+    return True
+
+
+def _opportunity_sort_key(item: Mapping[str, Any], fields: tuple[str, ...] | list[str]) -> tuple[float, ...]:
+    values = tuple(_board_score_value(item, field) for field in fields)
+    return values + (_board_score_value(item, "base_total"),)
+
+
+def _mark_opportunity_scope(item: Mapping[str, Any], scope: str) -> dict[str, Any]:
+    enriched = dict(item)
+    normalized_scope = _normalize_opportunity_scope(scope)
+    enriched["scope"] = normalized_scope
+    enriched["scope_name"] = SCOPE_NAMES.get(normalized_scope, SCOPE_NAMES["market"])
+    return enriched
+
+
+def _mark_opportunity_mode(item: Mapping[str, Any], mode: str) -> dict[str, Any]:
+    enriched = dict(item)
+    board = str(enriched.get("board") or "other")
+    strategy = _strategy_for_board(board)
+    board_name = BOARD_NAMES.get(board, BOARD_NAMES["other"])
+    enriched["board"] = board
+    enriched["board_name"] = board_name
+    enriched["mode"] = mode
+    if mode == "normal":
+        enriched["badge"] = f"{board_name}正式机会"
+    elif mode == "watchlist":
+        enriched["badge"] = f"{board_name}观察名单"
+    else:
+        enriched["badge"] = f"{board_name}保底推荐"
+    return enriched
+
+
+def _select_board_opportunities(items: list[dict[str, Any]], board: str, limit: int) -> list[dict[str, Any]]:
+    strategy = _strategy_for_board(board)
+    normal_items = [_mark_opportunity_mode(item, "normal") for item in items if _passes_board_filters(item)]
+    if normal_items:
+        sort_fields = tuple(strategy.get("sort", ("board_total", "low", "trend", "volume", "capital")))
+        normal_items.sort(key=lambda item: _opportunity_sort_key(item, sort_fields), reverse=True)
+        return normal_items[: max(0, int(limit))]
+
+    fallback_fields = tuple(strategy.get("fallback_sort", strategy.get("sort", ("board_total",))))
+    fallback_limit = min(max(0, int(limit)), int(strategy.get("fallback_limit", limit)))
+    empty_mode = str(strategy.get("empty_mode") or "fallback")
+    fallback_items = [_mark_opportunity_mode(item, empty_mode) for item in items]
+    fallback_items.sort(key=lambda item: _opportunity_sort_key(item, fallback_fields), reverse=True)
+    return fallback_items[:fallback_limit]
+
+
 def _score_signal(level: str) -> str:
     if level == "A":
         return "推荐"
@@ -608,6 +795,9 @@ def _build_scored_opportunity(
     score: Mapping[str, Any],
 ) -> dict[str, Any]:
     sub_scores = _score_mapping(score.get("sub_scores"))
+    board = identify_stock_board(code)
+    board_name = BOARD_NAMES.get(board, BOARD_NAMES["other"])
+    board_total_score = _calculate_board_total_score(sub_scores, board)
     total_score = int(score_safe_float(score.get("total_score"), default=0.0))
     low_score = int(score_safe_float(sub_scores.get("low"), default=0.0))
     trend_score = int(score_safe_float(sub_scores.get("trend"), default=0.0))
@@ -624,15 +814,24 @@ def _build_scored_opportunity(
         "price": price,
         "change_pct": score_safe_float(score_input.get("change_pct"), default=0.0),
         "turnover_rate": score_safe_float(score_input.get("turnover_rate"), default=0.0),
+        "base_total": total_score,
+        "board_total": board_total_score,
         "score": {
             "total_score": total_score,
+            "base_total": total_score,
+            "board_total": board_total_score,
             "level": level,
             "sub_scores": dict(sub_scores),
             "conclusion": conclusion,
             "tags": list(score.get("tags", []) or []),
+            "board_weights": dict(_strategy_for_board(board).get("weights", {})),
         },
         "code": code,
-        "score_value": total_score,
+        "score_value": board_total_score,
+        "board": board,
+        "board_name": board_name,
+        "mode": "candidate",
+        "badge": f"{board_name}待筛选",
         "signal": signal,
         "tag": signal,
         "reason": conclusion,
@@ -670,9 +869,10 @@ def _score_candidate(stock: Mapping[str, Any]) -> dict[str, Any] | None:
 
     history_features = _score_history_features(_score_fetch_history(code))
     score_input = _score_input(market_data, history_features)
-    score = _STOCK_SCORE_SERVICE.score(score_input)
-    if not _passes_opportunity_filters(score, score_input):
+    if not score_safe_float(score_input.get("price"), default=0.0):
         return None
+
+    score = _STOCK_SCORE_SERVICE.score(score_input)
 
     return _build_scored_opportunity(
         code=code,
@@ -683,37 +883,109 @@ def _score_candidate(stock: Mapping[str, Any]) -> dict[str, Any] | None:
     )
 
 
-def _calculate_scored_opportunities(limit: int = 10) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for stock in _score_candidate_pool():
+def _calculate_scored_opportunities(limit: int = 10, board: str = "all", scope: str = "market") -> list[dict[str, Any]]:
+    requested_board = _normalize_opportunity_board(board)
+    requested_scope = _normalize_opportunity_scope(scope)
+    candidates: list[dict[str, Any]] = []
+    for stock in _score_candidate_pool(requested_scope):
         try:
             item = _score_candidate(stock)
         except Exception as exc:  # pragma: no cover - runtime safety
             LOGGER.warning("Failed to score opportunity candidate %s: %s", stock, exc)
             item = None
-        if item is not None:
-            items.append(item)
+        if item is None:
+            continue
+        item = _mark_opportunity_scope(item, requested_scope)
+        if requested_board != "all" and item.get("board") != requested_board:
+            continue
+        candidates.append(item)
 
-    items.sort(
-        key=lambda item: int(score_safe_float(_score_mapping(item.get("score")).get("total_score"), default=0.0)),
-        reverse=True,
-    )
+    if requested_board != "all":
+        return _select_board_opportunities(candidates, requested_board, limit)
+
+    selected_by_board: dict[str, list[dict[str, Any]]] = {}
+    board_order = ("gem", "sz_main", "sh_main", "star", "other")
+    for board_key in board_order:
+        board_items = [item for item in candidates if item.get("board") == board_key]
+        if board_items:
+            selected_by_board[board_key] = _select_board_opportunities(board_items, board_key, limit)
+
+    return _merge_board_opportunities(selected_by_board, limit)
+
+
+def _merge_board_opportunities(selected_by_board: Mapping[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    """Round-robin board results so all-mode is not dominated by one board."""
+    board_order = ("gem", "sz_main", "sh_main", "star", "other")
+    buckets = {board: list(selected_by_board.get(board, [])) for board in board_order}
+    merged: list[dict[str, Any]] = []
+    while len(merged) < max(0, int(limit)) and any(buckets.values()):
+        for board in board_order:
+            bucket = buckets.get(board, [])
+            if bucket:
+                merged.append(bucket.pop(0))
+                if len(merged) >= max(0, int(limit)):
+                    break
+    return merged
+
+
+def _fallback_scored_opportunities(board: str, limit: int, scope: str = "market") -> list[dict[str, Any]]:
+    requested_board = _normalize_opportunity_board(board)
+    requested_scope = _normalize_opportunity_scope(scope)
+    if requested_scope != "market":
+        return []
+    items: list[dict[str, Any]] = []
+    for item in LOW_OPPORTUNITY_FALLBACK:
+        code = normalize_code(item.get("code", ""))
+        item_board = identify_stock_board(code)
+        if requested_board != "all" and item_board != requested_board:
+            continue
+        enriched = dict(item)
+        enriched["code"] = code
+        enriched["symbol"] = code
+        base_total = int(score_safe_float(enriched.get("score"), default=0.0))
+        enriched["base_total"] = base_total
+        enriched["board_total"] = base_total
+        enriched["score_value"] = base_total
+        enriched["board"] = item_board
+        enriched["board_name"] = BOARD_NAMES.get(item_board, BOARD_NAMES["other"])
+        enriched["scope"] = requested_scope
+        enriched["scope_name"] = SCOPE_NAMES.get(requested_scope, SCOPE_NAMES["market"])
+        enriched["mode"] = "fallback"
+        enriched["badge"] = f"{enriched['board_name']}保底推荐"
+        items.append(enriched)
+    items.sort(key=lambda item: int(score_safe_float(item.get("score_value"), default=0.0)), reverse=True)
+    if requested_board == "all":
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            grouped.setdefault(str(item.get("board") or "other"), []).append(item)
+        return _merge_board_opportunities(grouped, limit)
     return items[: max(0, int(limit))]
 
 
-def get_opportunities(limit: int = 10) -> list[dict[str, Any]]:
+def get_opportunities(limit: int = 10, board: str = "all", scope: str = "market") -> list[dict[str, Any]]:
     """Return the filtered low-position opportunity pool based on StockScoreService."""
+    normalized_board = _normalize_opportunity_board(board)
+    normalized_scope = _normalize_opportunity_scope(scope)
+    cache_key = f"{normalized_scope}:{normalized_board}"
+    use_cache = normalized_scope == "market"
     now = datetime.now()
-    cached_at = _LOW_POOL_CACHE.get("timestamp")
-    cached_items = _LOW_POOL_CACHE.get("items")
-    if cached_at is not None and cached_items is not None:
-        age_seconds = (now - cached_at).total_seconds()
-        if age_seconds <= LOW_POOL_CACHE_SECONDS:
-            return list(cached_items)[: max(0, int(limit))]
+    cached_payload = _SCORED_OPPORTUNITY_CACHE.get(cache_key) if use_cache else None
+    if use_cache and isinstance(cached_payload, Mapping):
+        cached_at = cached_payload.get("timestamp")
+        cached_items = cached_payload.get("items")
+        if cached_at is not None and cached_items is not None:
+            age_seconds = (now - cached_at).total_seconds()
+            if age_seconds <= LOW_POOL_CACHE_SECONDS:
+                return list(cached_items)[: max(0, int(limit))]
 
-    items = _calculate_scored_opportunities(limit=limit)
-    _LOW_POOL_CACHE["timestamp"] = now
-    _LOW_POOL_CACHE["items"] = list(items)
+    items = _calculate_scored_opportunities(limit=limit, board=normalized_board, scope=normalized_scope)
+    if not items:
+        items = _fallback_scored_opportunities(normalized_board, limit, normalized_scope)
+    if use_cache:
+        _SCORED_OPPORTUNITY_CACHE[cache_key] = {
+            "timestamp": now,
+            "items": list(items),
+        }
     return items
 
 
@@ -729,7 +1001,12 @@ def get_auto_recommendation() -> dict[str, Any]:
         return {}
     return max(
         pool,
-        key=lambda item: int(score_safe_float(_score_mapping(item.get("score")).get("total_score"), default=0.0)),
+        key=lambda item: int(
+            score_safe_float(
+                _score_mapping(item.get("score")).get("board_total"),
+                default=score_safe_float(item.get("score_value"), default=0.0),
+            )
+        ),
     )
 
 
