@@ -4,212 +4,30 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Smart Money Monitor</title>
-  <style>
-    :root {
-      --bg: #0b1220;
-      --panel: #121c2e;
-      --panel-soft: #182338;
-      --card: #1b2740;
-      --border: #26324b;
-      --text: #edf3ff;
-      --muted: #93a4c5;
-      --accent: #6d5dfc;
-      --accent-2: #14b8a6;
-      --green: #1ec98b;
-      --red: #ff5b6e;
-      --yellow: #f4b740;
-      --shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-      --radius: 18px;
-    }
-
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(109, 93, 252, 0.16), transparent 22%),
-        radial-gradient(circle at top right, rgba(20, 184, 166, 0.12), transparent 20%),
-        linear-gradient(180deg, #09111f 0%, #0d1526 100%);
-      color: var(--text);
-      min-height: 100vh;
-    }
-
-    .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
-    .sidebar {
-      background: rgba(10, 17, 31, 0.82);
-      border-right: 1px solid rgba(255, 255, 255, 0.06);
-      padding: 22px 16px;
-      backdrop-filter: blur(16px);
-    }
-    .brand { font-size: 22px; font-weight: 800; color: #ff9c45; margin-bottom: 22px; }
-    .nav { display: grid; gap: 10px; }
-    .nav button {
-      width: 100%;
-      text-align: left;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--muted);
-      padding: 12px 14px;
-      border-radius: 14px;
-      cursor: pointer;
-      font-size: 15px;
-      box-shadow: none;
-    }
-    .nav button.active, .nav button:hover { background: rgba(109, 93, 252, 0.16); color: #fff; border-color: rgba(109, 93, 252, 0.26); }
-
-    .main { padding: 24px; }
-    .view { display: none; }
-    .view.active { display: block; }
-    .hero { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
-    .hero h1 { margin: 0 0 8px; font-size: 32px; }
-    .hero p { margin: 0; color: var(--muted); line-height: 1.7; }
-    .topbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-
-    .panel, .metric, .card, .watch-item, .heat-item {
-      background: linear-gradient(180deg, rgba(24, 35, 56, 0.95), rgba(18, 28, 46, 0.95));
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-
-    .panel { padding: 18px; margin-bottom: 18px; }
-    .panel h2 { margin: 0 0 8px; font-size: 20px; }
-    .panel p { margin: 0; color: var(--muted); line-height: 1.7; }
-    .toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 16px 0 0; }
-    .toolbar button, .form button {
-      border: none;
-      background: linear-gradient(135deg, var(--accent), #4f46e5);
-      color: #fff;
-      border-radius: 12px;
-      padding: 12px 18px;
-      cursor: pointer;
-      font-weight: 700;
-    }
-    .toolbar button.alt { background: linear-gradient(135deg, var(--accent-2), #0f9f90); }
-    .toolbar button:disabled, .form button:disabled { opacity: .7; cursor: not-allowed; }
-
-    .chips { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
-    .chip {
-      padding: 8px 12px; border-radius: 999px;
-      background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08);
-      color: var(--muted); font-size: 13px;
-    }
-    .chip.good { color: #9cf1cb; border-color: rgba(30,201,139,.28); background: rgba(30,201,139,.08); }
-    .chip.bad { color: #ffb4bc; border-color: rgba(255,91,110,.28); background: rgba(255,91,110,.08); }
-
-    .grid-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 16px; margin-bottom: 18px; }
-    .metric { padding: 18px; }
-    .metric small { display: block; color: var(--muted); margin-bottom: 8px; }
-    .metric strong { font-size: 30px; display: block; }
-
-    .two-col { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
-    .form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-top: 14px; }
-    input {
-      width: 100%; background: rgba(255,255,255,.04); color: var(--text);
-      border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 12px 14px;
-      outline: none;
-    }
-    input:focus { border-color: rgba(109,93,252,.8); box-shadow: 0 0 0 3px rgba(109,93,252,.12); }
-
-    .watch-list, .results-grid, .etf-grid, .heatmap { display: grid; gap: 14px; }
-    .watch-item { padding: 14px 16px; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
-    .watch-main strong { display: block; font-size: 15px; }
-    .watch-main span { color: var(--muted); font-size: 13px; }
-    .danger {
-      border: none; background: linear-gradient(135deg, #ff5b6e, #d93c4d); color: #fff;
-      border-radius: 10px; padding: 9px 12px; cursor: pointer; font-weight: 700;
-    }
-
-    .results-grid { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-    .etf-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-    .card { padding: 18px; }
-    .card.error { border-color: rgba(255,91,110,.35); background: linear-gradient(180deg, rgba(79, 23, 35, 0.95), rgba(45, 17, 24, 0.95)); }
-    .card-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 14px; }
-    .card-head h3 { margin: 0 0 4px; font-size: 22px; }
-    .sub { color: var(--muted); font-size: 13px; }
-    .badge {
-      padding: 8px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
-      background: rgba(30,201,139,.12); color: #9cf1cb; border: 1px solid rgba(30,201,139,.24);
-    }
-    .badge.error { background: rgba(255,91,110,.12); color: #ffb4bc; border-color: rgba(255,91,110,.24); }
-    .kv { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 14px; }
-    .cell { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.06); border-radius: 14px; padding: 12px; }
-    .cell small { display: block; color: var(--muted); margin-bottom: 6px; }
-    .cell strong { font-size: 18px; }
-    .tags { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
-    .tag { padding: 7px 10px; border-radius: 999px; font-size: 12px; background: rgba(109,93,252,.14); color: #d7d2ff; }
-    .tag.risk { background: rgba(255,91,110,.12); color: #ffb4bc; }
-    .summary { margin-top: 10px; color: #dbe6ff; line-height: 1.7; font-size: 14px; }
-
-    .heatmap { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
-    .heat-item { padding: 16px; min-height: 130px; display: flex; flex-direction: column; justify-content: space-between; }
-    .heat-item.green { background: linear-gradient(180deg, rgba(25, 164, 114, 0.92), rgba(21, 127, 89, 0.92)); }
-    .heat-item.red { background: linear-gradient(180deg, rgba(214, 70, 89, 0.92), rgba(162, 42, 59, 0.92)); }
-    .heat-item.neutral { background: linear-gradient(180deg, rgba(55, 74, 108, 0.95), rgba(34, 47, 71, 0.95)); }
-    .heat-item h4 { margin: 0; font-size: 18px; }
-    .heat-item small { color: rgba(255,255,255,.8); }
-    .heat-item strong { font-size: 30px; }
-    .empty { padding: 24px; text-align: center; color: var(--muted); border: 1px dashed rgba(255,255,255,.12); border-radius: 16px; }
-    .opp-list { display: grid; gap: 12px; margin-top: 14px; }
-    .opp-item {
-      padding: 14px 16px;
-      border-radius: 14px;
-      border: 1px solid rgba(255,255,255,.08);
-      background: rgba(255,255,255,.03);
-    }
-    .opp-item.strong {
-      border-color: rgba(30, 201, 139, 0.28);
-      background: rgba(30, 201, 139, 0.08);
-    }
-    .opp-item.medium {
-      border-color: rgba(109, 93, 252, 0.28);
-      background: rgba(109, 93, 252, 0.08);
-    }
-    .opp-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      align-items: baseline;
-      margin-bottom: 6px;
-    }
-    .opp-head strong { font-size: 16px; }
-    .opp-score { color: #fff1a8; font-size: 13px; }
-    .opp-advice { color: var(--text); font-size: 14px; line-height: 1.7; }
-    .opp-meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
-
-    @media (max-width: 980px) {
-      .app { grid-template-columns: 1fr; }
-      .sidebar { border-right: none; border-bottom: 1px solid rgba(255,255,255,.06); }
-      .two-col { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 720px) {
-      .form { grid-template-columns: 1fr; }
-      .kv { grid-template-columns: 1fr; }
-      .hero { flex-direction: column; }
-    }
-  </style>
+  <link rel="stylesheet" href="/frontend/styles.css">
 </head>
 <body>
   <div class="app">
     <aside class="sidebar">
       <div class="brand">聪明钱监控</div>
       <nav class="nav">
-        <button class="active" data-view="homeView">首页</button>
+        <button data-view="homeView">首页</button>
         <button data-view="stockView">个股分析</button>
-        <button data-view="etfView">ETF分析</button>
+        <button class="active" data-view="etfView">指数ETF</button>
+        <button data-view="opportunityView">低位机会池</button>
         <button data-view="heatView">市场热力图</button>
       </nav>
     </aside>
 
     <main class="main">
-      <section id="homeView" class="view active">
+      <section id="homeView" class="view">
         <div class="hero">
           <div>
             <h1>市场总览</h1>
-            <p>复用现有个股分析接口与新增 ETF 分析接口，统一展示市场情绪、自选股结果与 ETF 风格观察。</p>
+            <p>汇总个股机会榜、市场情绪和指数 ETF 联动结果。首页保留原有能力，同时同步展示当前指数面板的摘要。</p>
           </div>
           <div class="topbar">
-            <button id="refreshHomeBtn">刷新首页数据</button>
+            <button id="refreshHomeBtn" class="primary-button" type="button">刷新首页数据</button>
           </div>
         </div>
 
@@ -217,23 +35,19 @@
           <div class="metric"><small>市场状态</small><strong id="homeMarketStatus">--</strong></div>
           <div class="metric"><small>平均涨跌幅</small><strong id="homeAvgChange">--</strong></div>
           <div class="metric"><small>资金净流入</small><strong id="homeTotalInflow">--</strong></div>
-          <div class="metric"><small>ETF 监控数</small><strong id="homeEtfCount">--</strong></div>
+          <div class="metric"><small>指数跟踪数</small><strong id="homeEtfCount">--</strong></div>
         </div>
 
         <div class="two-col">
           <div class="panel">
             <h2>强机会</h2>
-            <p>评分 5 分及以上的高优先级标的，适合放到首页最先观察。</p>
-            <div id="strongOpportunityList" class="opp-list">
-              <div class="empty">运行分析后展示强机会。</div>
-            </div>
+            <p>评分 5 分及以上的高优先级标的。</p>
+            <div id="strongOpportunityList" class="opp-list"><div class="empty">运行分析后展示强机会。</div></div>
           </div>
           <div class="panel">
             <h2>次机会</h2>
             <p>评分 3 分以上但未达到强机会级别的活跃标的。</p>
-            <div id="mediumOpportunityList" class="opp-list">
-              <div class="empty">运行分析后展示次机会。</div>
-            </div>
+            <div id="mediumOpportunityList" class="opp-list"><div class="empty">运行分析后展示次机会。</div></div>
           </div>
         </div>
 
@@ -241,16 +55,12 @@
           <div class="panel">
             <h2>市场脉搏</h2>
             <p id="homeMarketSummary">点击“刷新首页数据”后展示本次个股情绪判断。</p>
-            <div class="chips" id="styleChips">
-              <span class="chip">等待加载</span>
-            </div>
+            <div class="chips" id="styleChips"><span class="chip">等待加载</span></div>
           </div>
           <div class="panel">
-            <h2>ETF 快照</h2>
-            <p id="homeEtfSummary">点击“刷新首页数据”后展示 ETF 评分前列结果。</p>
-            <div class="chips" id="homeEtfChips">
-              <span class="chip">等待加载</span>
-            </div>
+            <h2>指数快照</h2>
+            <p id="homeEtfSummary">进入页面后自动加载默认指数面板。</p>
+            <div class="chips" id="homeEtfChips"><span class="chip">等待加载</span></div>
           </div>
         </div>
       </section>
@@ -266,11 +76,11 @@
         <div class="two-col">
           <div class="panel">
             <h2>自选股管理</h2>
-            <p>支持查看、添加、删除股票，不影响 ETF 模块。</p>
+            <p>支持查看、添加、删除股票，不影响指数 ETF 模块。</p>
             <div class="form">
               <input id="stockCodeInput" placeholder="请输入股票代码（如 600519）">
               <input id="stockNameInput" placeholder="请输入股票名称（如 贵州茅台）">
-              <button id="addStockBtn">添加股票</button>
+              <button id="addStockBtn" type="button">添加股票</button>
             </div>
             <div class="chips"><span id="stockManageText" class="chip">正在加载自选股...</span></div>
             <div id="stockWatchList" class="watch-list" style="margin-top:14px;"></div>
@@ -280,7 +90,7 @@
             <h2>运行个股分析</h2>
             <p>执行后展示评分、信号、风险、AI 结论以及飞书推送状态。</p>
             <div class="toolbar">
-              <button id="runStockBtn">运行分析</button>
+              <button id="runStockBtn" type="button">运行分析</button>
               <span id="stockRunStatus" class="chip">等待执行</span>
               <span id="stockElapsed" class="chip">耗时：--</span>
               <span id="stockNotify" class="chip">飞书：--</span>
@@ -288,46 +98,103 @@
           </div>
         </div>
 
-        <div id="stockResults" class="results-grid">
-          <div class="empty">点击“运行分析”后，这里显示个股结果。</div>
-        </div>
+        <div id="stockResults" class="results-grid"><div class="empty">点击“运行分析”后，这里显示个股结果。</div></div>
       </section>
 
-      <section id="etfView" class="view">
+      <section id="etfView" class="view active">
         <div class="hero">
           <div>
-            <h1>ETF分析</h1>
-            <p>新增独立 ETF 自选池与分析流程，接口来自 <code>/api/etfs</code> 和 <code>/api/run-etf-once</code>。</p>
+            <h1>指数 ETF 联动看板</h1>
+            <p>主界面核心是指数卡片看板。点击任意指数卡片后，下方会立即展示这个指数今天的信息和对应 ETF 建议；右上角设置弹层只负责配置主界面显示哪些指数。</p>
+          </div>
+          <div class="topbar">
+            <button id="refreshIndexBtn" class="primary-button" type="button">刷新数据</button>
+            <button id="openIndexSettingsBtn" class="icon-button" type="button" aria-label="打开指数设置">
+              <span class="icon-gear">⚙</span>
+            </button>
+            <span id="indexBoardStatus" class="chip blue">正在准备指数卡片...</span>
           </div>
         </div>
 
-        <div class="two-col">
-          <div class="panel">
-            <h2>ETF 自选池</h2>
-            <p>管理你重点观察的 ETF，支持增删和实时刷新。</p>
-            <div class="form">
-              <input id="etfCodeInput" placeholder="请输入ETF代码（如 510300）">
-              <input id="etfNameInput" placeholder="请输入ETF名称（如 沪深300ETF）">
-              <button id="addEtfBtn" class="alt">添加ETF</button>
+        <div class="board-shell">
+          <section class="index-board-card">
+            <div class="section-head">
+              <div>
+                <h2>指数卡片看板</h2>
+                <p>默认显示当前配置中的指数列表，设置弹层中的增删和排序会立即同步到这里。</p>
+              </div>
+              <div class="chips" id="indexQuickChips"><span class="chip">等待数据</span></div>
             </div>
-            <div class="chips"><span id="etfManageText" class="chip">正在加载 ETF 自选池...</span></div>
-            <div id="etfWatchList" class="watch-list" style="margin-top:14px;"></div>
-          </div>
+            <div id="indexBoardGrid" class="index-card-grid"><div class="empty">指数卡片加载中...</div></div>
+          </section>
 
-          <div class="panel">
-            <h2>运行 ETF 分析</h2>
-            <p>展示 ETF 涨跌、成交额、评分与简短风格结论，且不影响个股分析流程。</p>
-            <div class="toolbar">
-              <button id="runEtfBtn" class="alt">运行 ETF 分析</button>
-              <span id="etfRunStatus" class="chip">等待执行</span>
-              <span id="etfElapsed" class="chip">耗时：--</span>
+          <section class="index-detail-card">
+            <div class="section-head detail-head">
+              <div>
+                <h2>今日信息区</h2>
+                <p>展示当前选中指数的点位、涨跌、今日波动、市场风格和对应 ETF 建议。</p>
+              </div>
+              <div class="chips">
+                <span id="indexSelectionStatus" class="chip blue">默认选中第一张卡片</span>
+              </div>
+            </div>
+            <section id="indexDetailPanel" class="detail-panel">
+              <div class="loading"><div><div class="spinner"></div>正在准备指数详情...</div></div>
+            </section>
+          </section>
+        </div>
+
+        <details class="advanced-panel">
+          <summary>高级选项</summary>
+          <div class="advanced-panel-body">
+            <p>高级操作默认收起，不抢主内容。指数的添加、删除和排序请通过右上角设置弹层完成。</p>
+            <div class="chips">
+              <button id="resetIndexBoardBtn" class="filter-button" type="button">恢复默认指数</button>
+              <button id="openIndexSettingsInlineBtn" class="filter-button" type="button">打开设置弹层</button>
+              <button id="refreshIndexInlineBtn" class="filter-button" type="button">重新拉取指数数据</button>
             </div>
           </div>
+        </details>
+      </section>
+
+      <section id="opportunityView" class="view">
+        <div class="hero">
+          <div>
+            <h1>低位机会池</h1>
+            <p>独立展示今日自动推荐、低位机会列表和详情信息。当前默认优先展示个股机会，指数机会作为辅助模块切换查看。</p>
+            <div class="chips opportunity-tabs" id="opportunityTabs">
+              <button class="filter-button active" type="button" data-opportunity-tab="stock">个股机会</button>
+              <button class="filter-button" type="button" data-opportunity-tab="index">指数机会</button>
+            </div>
+          </div>
+          <div class="topbar">
+            <span id="opportunityStatus" class="chip blue">正在准备低位机会池...</span>
+          </div>
         </div>
 
-        <div id="etfResults" class="etf-grid">
-          <div class="empty">点击“运行 ETF 分析”后，这里显示 ETF 结果。</div>
-        </div>
+        <section class="opportunity-shell">
+          <div class="section-head">
+            <div>
+              <h2>今日自动推荐</h2>
+              <p>默认展示评分最高的一项，点击下方卡片可以切换查看其他标的详情。</p>
+            </div>
+          </div>
+
+          <div class="opportunity-layout">
+            <article id="opportunityRecommendCard" class="recommend-card">
+              <div class="loading"><div><div class="spinner"></div>正在准备自动推荐...</div></div>
+            </article>
+
+            <div class="opportunity-side">
+              <div id="opportunityPoolList" class="opportunity-pool-grid">
+                <div class="empty">低位机会列表加载中...</div>
+              </div>
+              <div id="opportunityDetailPanel" class="opportunity-detail-card">
+                <div class="empty">点击某张机会卡片后，这里显示详细信息。</div>
+              </div>
+            </div>
+          </div>
+        </section>
       </section>
 
       <section id="heatView" class="view">
@@ -337,395 +204,40 @@
             <p>用当前个股结果生成轻量热力块，颜色取决于涨跌幅，大小信息用成交额和评分补充表达。</p>
           </div>
         </div>
-        <div id="heatmap" class="heatmap">
-          <div class="empty">先运行一次个股分析，热力图会基于结果自动渲染。</div>
-        </div>
+        <div id="heatmap" class="heatmap"><div class="empty">先运行一次个股分析，热力图会基于结果自动渲染。</div></div>
       </section>
     </main>
   </div>
 
-  <script>
-    const state = { stockPayload: null, etfPayload: null };
-
-    const dom = {
-      navButtons: [...document.querySelectorAll(".nav button")],
-      homeMarketStatus: document.getElementById("homeMarketStatus"),
-      homeAvgChange: document.getElementById("homeAvgChange"),
-      homeTotalInflow: document.getElementById("homeTotalInflow"),
-      homeEtfCount: document.getElementById("homeEtfCount"),
-      homeMarketSummary: document.getElementById("homeMarketSummary"),
-      styleChips: document.getElementById("styleChips"),
-      strongOpportunityList: document.getElementById("strongOpportunityList"),
-      mediumOpportunityList: document.getElementById("mediumOpportunityList"),
-      homeEtfSummary: document.getElementById("homeEtfSummary"),
-      homeEtfChips: document.getElementById("homeEtfChips"),
-      refreshHomeBtn: document.getElementById("refreshHomeBtn"),
-      stockCodeInput: document.getElementById("stockCodeInput"),
-      stockNameInput: document.getElementById("stockNameInput"),
-      addStockBtn: document.getElementById("addStockBtn"),
-      stockManageText: document.getElementById("stockManageText"),
-      stockWatchList: document.getElementById("stockWatchList"),
-      runStockBtn: document.getElementById("runStockBtn"),
-      stockRunStatus: document.getElementById("stockRunStatus"),
-      stockElapsed: document.getElementById("stockElapsed"),
-      stockNotify: document.getElementById("stockNotify"),
-      stockResults: document.getElementById("stockResults"),
-      etfCodeInput: document.getElementById("etfCodeInput"),
-      etfNameInput: document.getElementById("etfNameInput"),
-      addEtfBtn: document.getElementById("addEtfBtn"),
-      etfManageText: document.getElementById("etfManageText"),
-      etfWatchList: document.getElementById("etfWatchList"),
-      runEtfBtn: document.getElementById("runEtfBtn"),
-      etfRunStatus: document.getElementById("etfRunStatus"),
-      etfElapsed: document.getElementById("etfElapsed"),
-      etfResults: document.getElementById("etfResults"),
-      heatmap: document.getElementById("heatmap")
-    };
-
-    const api = {
-      stocks: "/api/stocks",
-      runStocks: "/api/run-once",
-      etfs: "/api/etfs",
-      runEtfs: "/api/run-etf-once"
-    };
-
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-    }
-
-    function formatNumber(value, digits = 2) {
-      const num = Number(value);
-      if (value === null || value === undefined || value === "" || Number.isNaN(num)) return "N/A";
-      return num.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits });
-    }
-
-    function formatPercent(value) {
-      const num = Number(value);
-      if (value === null || value === undefined || value === "" || Number.isNaN(num)) return "N/A";
-      return `${num.toFixed(2)}%`;
-    }
-
-    function formatAmount(value) {
-      const num = Number(value);
-      if (value === null || value === undefined || value === "" || Number.isNaN(num)) return "N/A";
-      const abs = Math.abs(num);
-      if (abs >= 100000000) return `${(num / 100000000).toFixed(2)} 亿`;
-      if (abs >= 10000) return `${(num / 10000).toFixed(2)} 万`;
-      return num.toFixed(2);
-    }
-
-    function setChip(el, text, tone = "") {
-      el.textContent = text;
-      el.className = `chip ${tone}`.trim();
-    }
-
-    function switchView(id) {
-      document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === id));
-      dom.navButtons.forEach(btn => btn.classList.toggle("active", btn.dataset.view === id));
-    }
-
-    function renderWatchList(target, items, type) {
-      if (!items.length) {
-        target.innerHTML = `<div class="empty">当前暂无${type === "stock" ? "股票" : "ETF"}自选项。</div>`;
-        return;
-      }
-      target.innerHTML = items.map(item => `
-        <div class="watch-item">
-          <div class="watch-main">
-            <strong>${escapeHtml(item.name)}</strong>
-            <span>${escapeHtml(item.code)}</span>
-          </div>
-          <button class="danger" onclick="${type === "stock" ? "deleteStock" : "deleteEtf"}('${escapeHtml(item.code)}')">删除</button>
+  <div id="indexSettingsModal" class="modal-shell hidden" aria-hidden="true">
+    <div id="indexSettingsBackdrop" class="modal-backdrop"></div>
+    <aside class="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="indexSettingsTitle">
+      <div class="settings-head">
+        <div>
+          <h2 id="indexSettingsTitle">指数卡片设置</h2>
+          <p>这里管理主界面要显示哪些指数卡片，以及它们的展示顺序。</p>
         </div>
-      `).join("");
-    }
+        <button id="closeIndexSettingsBtn" class="icon-button ghost-icon" type="button" aria-label="关闭设置">✕</button>
+      </div>
 
-    function renderStockResults(results) {
-      if (!results.length) {
-        dom.stockResults.innerHTML = `<div class="empty">本次没有返回个股结果。</div>`;
-        dom.heatmap.innerHTML = `<div class="empty">本次没有热力图数据。</div>`;
-        return;
-      }
-
-      dom.stockResults.innerHTML = results.map(item => {
-        const analysis = item.analysis || {};
-        const market = item.market_data || {};
-        const fund = item.fund_flow || {};
-        const isError = item.status !== "ok";
-        return `
-          <article class="card ${isError ? "error" : ""}">
-            <div class="card-head">
-              <div>
-                <h3>${escapeHtml(item.name || "未知股票")}</h3>
-                <div class="sub">${escapeHtml(item.code || "N/A")} · 评分 ${escapeHtml(item.score ?? 0)}</div>
-              </div>
-              <span class="badge ${isError ? "error" : ""}">${escapeHtml(item.status || "unknown")}</span>
-            </div>
-            <div class="kv">
-              <div class="cell"><small>最新价</small><strong>${formatNumber(market.latest_price)}</strong></div>
-              <div class="cell"><small>涨跌幅</small><strong>${formatPercent(market.pct_change)}</strong></div>
-              <div class="cell"><small>成交额</small><strong>${formatAmount(market.turnover)}</strong></div>
-              <div class="cell"><small>主力净流入</small><strong>${formatAmount(fund.main_net_inflow)}</strong></div>
-            </div>
-            <div class="tags">${(analysis.signal || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("") || `<span class="tag">暂无信号</span>`}</div>
-            <div class="tags">${(analysis.risk || []).map(tag => `<span class="tag risk">${escapeHtml(tag)}</span>`).join("") || `<span class="tag">暂无风险</span>`}</div>
-            <div class="summary">${escapeHtml(item.ai_summary || item.error || "暂无摘要")}</div>
-          </article>
-        `;
-      }).join("");
-
-      renderHeatmap(results);
-    }
-
-    function renderEtfResults(results) {
-      if (!results.length) {
-        dom.etfResults.innerHTML = `<div class="empty">本次没有返回 ETF 结果。</div>`;
-        return;
-      }
-      dom.etfResults.innerHTML = results.map(item => `
-        <article class="card ${item.status !== "ok" ? "error" : ""}">
-          <div class="card-head">
-            <div>
-              <h3>${escapeHtml(item.name || "未知ETF")}</h3>
-              <div class="sub">${escapeHtml(item.code || "N/A")} · 评分 ${escapeHtml(item.score ?? 0)}</div>
-            </div>
-            <span class="badge ${item.status !== "ok" ? "error" : ""}">${escapeHtml(item.status || "unknown")}</span>
-          </div>
-          <div class="kv">
-            <div class="cell"><small>最新价</small><strong>${formatNumber(item.latest_price)}</strong></div>
-            <div class="cell"><small>涨跌幅</small><strong>${formatPercent(item.pct_change)}</strong></div>
-            <div class="cell"><small>成交额</small><strong>${formatAmount(item.turnover)}</strong></div>
-            <div class="cell"><small>资金方向</small><strong>${escapeHtml(item.fund_direction || "未知")}</strong></div>
-          </div>
-          <div class="tags">${(item.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("") || `<span class="tag">暂无风格标签</span>`}</div>
-          <div class="summary">${escapeHtml(item.summary || item.error || "暂无摘要")}</div>
-        </article>
-      `).join("");
-    }
-
-    function renderHeatmap(results) {
-      if (!results.length) {
-        dom.heatmap.innerHTML = `<div class="empty">先运行一次个股分析，热力图会自动渲染。</div>`;
-        return;
-      }
-      dom.heatmap.innerHTML = results.map(item => {
-        const market = item.market_data || {};
-        const pct = Number(market.pct_change || 0);
-        const tone = pct > 0.8 ? "green" : pct < -0.8 ? "red" : "neutral";
-        return `
-          <div class="heat-item ${tone}">
-            <div>
-              <h4>${escapeHtml(item.name || "未知股票")}</h4>
-              <small>${escapeHtml(item.code || "")}</small>
-            </div>
-            <div>
-              <strong>${formatPercent(market.pct_change)}</strong>
-              <small>成交额 ${formatAmount(market.turnover)} · 评分 ${escapeHtml(item.score ?? 0)}</small>
-            </div>
-          </div>
-        `;
-      }).join("");
-    }
-
-    function renderOpportunityItems(items, level) {
-      if (!items.length) {
-        return `<div class="empty">暂无${level === "strong" ? "强机会" : "次机会"}。</div>`;
-      }
-
-      return items.map((item, index) => `
-        <div class="opp-item ${level}">
-          <div class="opp-head">
-            <strong>${index + 1}. ${escapeHtml(item.name || "未知标的")} (${escapeHtml(item.code || "N/A")})</strong>
-            <span class="opp-score">${"⭐".repeat(Math.max(1, Math.min(Number(item.score || 0), 5)))}</span>
-          </div>
-          <div class="opp-advice">${escapeHtml(item.ai_advice || "暂无建议")}</div>
-          <div class="opp-meta">${escapeHtml((item.signals || []).join("、") || "暂无信号")}</div>
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <h3>已添加指数</h3>
+          <span id="selectedIndexCount" class="chip blue">0 项</span>
         </div>
-      `).join("");
-    }
+        <div id="selectedIndexList" class="selected-index-list"><div class="empty">正在加载已添加指数...</div></div>
+      </div>
 
-    function renderHome() {
-      const stockData = state.stockPayload?.data || {};
-      const sentiment = stockData.market_sentiment || {};
-      const detail = sentiment.detail || {};
-      const etfResults = state.etfPayload?.etf_results || [];
-      const styleDistribution = stockData.style_distribution || [];
-      const opportunityRank = stockData.opportunity_rank || [];
-      const strongOpportunities = opportunityRank.filter(item => item.level === "strong");
-      const mediumOpportunities = opportunityRank.filter(item => item.level === "medium");
+      <div class="settings-section">
+        <div class="settings-section-head">
+          <h3>可选指数池</h3>
+          <span id="availableIndexCount" class="chip blue">0 项</span>
+        </div>
+        <div id="availableIndexPool" class="available-index-pool"><div class="empty">正在加载可选指数...</div></div>
+      </div>
+    </aside>
+  </div>
 
-      dom.homeMarketStatus.textContent = sentiment.market_status || "--";
-      dom.homeAvgChange.textContent = detail.avg_change === undefined ? "--" : formatPercent(detail.avg_change);
-      dom.homeTotalInflow.textContent = detail.total_inflow === undefined ? "--" : formatAmount(detail.total_inflow);
-      dom.homeEtfCount.textContent = String(etfResults.length || 0);
-      dom.homeMarketSummary.textContent = sentiment.summary || "运行一次个股分析后，这里会显示市场情绪判断。";
-      dom.strongOpportunityList.innerHTML = renderOpportunityItems(strongOpportunities, "strong");
-      dom.mediumOpportunityList.innerHTML = renderOpportunityItems(mediumOpportunities, "medium");
-
-      dom.styleChips.innerHTML = styleDistribution.length
-        ? styleDistribution.map(item => `<span class="chip">${escapeHtml(item.label)} · ${escapeHtml(item.stock_count)}只 · ${formatAmount(item.net_inflow)}</span>`).join("")
-        : `<span class="chip">暂无风格分布</span>`;
-
-      dom.homeEtfSummary.textContent = etfResults.length
-        ? `当前 ETF 评分前列：${etfResults.slice(0, 3).map(item => `${item.name}(${item.score})`).join("、")}`
-        : "运行一次 ETF 分析后，这里会显示 ETF 风格观察。";
-      dom.homeEtfChips.innerHTML = etfResults.length
-        ? etfResults.slice(0, 4).map(item => `<span class="chip ${item.score >= 2 ? "good" : ""}">${escapeHtml(item.name)} · ${item.score}</span>`).join("")
-        : `<span class="chip">暂无 ETF 快照</span>`;
-    }
-
-    async function fetchJson(url, options) {
-      const response = await fetch(url, options);
-      const payload = await response.json();
-      if (!response.ok || payload.ok === false) throw new Error(payload.message || "请求失败");
-      return payload;
-    }
-
-    async function loadStocks() {
-      try {
-        const payload = await fetchJson(api.stocks);
-        const stocks = payload.data?.stocks || [];
-        renderWatchList(dom.stockWatchList, stocks, "stock");
-        setChip(dom.stockManageText, `当前自选股：${stocks.length}只`);
-      } catch (error) {
-        setChip(dom.stockManageText, `加载失败：${error.message}`, "bad");
-        dom.stockWatchList.innerHTML = `<div class="empty">股票自选股加载失败。</div>`;
-      }
-    }
-
-    async function addStock() {
-      const code = dom.stockCodeInput.value.trim();
-      const name = dom.stockNameInput.value.trim();
-      if (!code || !name) return alert("请输入股票代码和股票名称");
-      dom.addStockBtn.disabled = true;
-      try {
-        await fetchJson(api.stocks, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, name })
-        });
-        dom.stockCodeInput.value = "";
-        dom.stockNameInput.value = "";
-        await loadStocks();
-      } catch (error) {
-        alert(`添加股票失败：${error.message}`);
-      } finally {
-        dom.addStockBtn.disabled = false;
-      }
-    }
-
-    async function deleteStock(code) {
-      try {
-        await fetchJson(`${api.stocks}/${encodeURIComponent(code)}`, { method: "DELETE" });
-        await loadStocks();
-      } catch (error) {
-        alert(`删除股票失败：${error.message}`);
-      }
-    }
-
-    async function runStockAnalysis() {
-      dom.runStockBtn.disabled = true;
-      setChip(dom.stockRunStatus, "分析中...");
-      setChip(dom.stockElapsed, "耗时：--");
-      setChip(dom.stockNotify, "飞书：--");
-      try {
-        const payload = await fetchJson(api.runStocks, { method: "POST", headers: { "Content-Type": "application/json" } });
-        state.stockPayload = payload;
-        renderStockResults(payload.data?.results || []);
-        renderHome();
-        setChip(dom.stockRunStatus, "分析完成", "good");
-        setChip(dom.stockElapsed, `耗时：${formatNumber(payload.data?.elapsed_seconds ?? 0, 3)}秒`);
-        const notification = payload.data?.notification || {};
-        setChip(dom.stockNotify, notification.sent ? "飞书：已推送" : `飞书：${notification.reason || "未推送"}`, notification.sent ? "good" : "bad");
-      } catch (error) {
-        setChip(dom.stockRunStatus, `失败：${error.message}`, "bad");
-        dom.stockResults.innerHTML = `<div class="empty">个股分析失败：${escapeHtml(error.message)}</div>`;
-      } finally {
-        dom.runStockBtn.disabled = false;
-      }
-    }
-
-    async function loadEtfs() {
-      try {
-        const payload = await fetchJson(api.etfs);
-        const etfs = payload.data?.etfs || [];
-        renderWatchList(dom.etfWatchList, etfs, "etf");
-        setChip(dom.etfManageText, `当前 ETF：${etfs.length}只`);
-      } catch (error) {
-        setChip(dom.etfManageText, `加载失败：${error.message}`, "bad");
-        dom.etfWatchList.innerHTML = `<div class="empty">ETF 自选池加载失败。</div>`;
-      }
-    }
-
-    async function addEtf() {
-      const code = dom.etfCodeInput.value.trim();
-      const name = dom.etfNameInput.value.trim();
-      if (!code || !name) return alert("请输入 ETF 代码和名称");
-      dom.addEtfBtn.disabled = true;
-      try {
-        await fetchJson(api.etfs, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, name })
-        });
-        dom.etfCodeInput.value = "";
-        dom.etfNameInput.value = "";
-        await loadEtfs();
-      } catch (error) {
-        alert(`添加 ETF 失败：${error.message}`);
-      } finally {
-        dom.addEtfBtn.disabled = false;
-      }
-    }
-
-    async function deleteEtf(code) {
-      try {
-        await fetchJson(`${api.etfs}/${encodeURIComponent(code)}`, { method: "DELETE" });
-        await loadEtfs();
-      } catch (error) {
-        alert(`删除 ETF 失败：${error.message}`);
-      }
-    }
-
-    async function runEtfAnalysis() {
-      dom.runEtfBtn.disabled = true;
-      setChip(dom.etfRunStatus, "分析中...");
-      setChip(dom.etfElapsed, "耗时：--");
-      try {
-        const payload = await fetchJson(api.runEtfs, { method: "POST", headers: { "Content-Type": "application/json" } });
-        state.etfPayload = payload;
-        renderEtfResults(payload.etf_results || []);
-        renderHome();
-        setChip(dom.etfRunStatus, "分析完成", "good");
-        setChip(dom.etfElapsed, `耗时：${formatNumber(payload.elapsed_seconds ?? 0, 3)}秒`);
-      } catch (error) {
-        setChip(dom.etfRunStatus, `失败：${error.message}`, "bad");
-        dom.etfResults.innerHTML = `<div class="empty">ETF 分析失败：${escapeHtml(error.message)}</div>`;
-      } finally {
-        dom.runEtfBtn.disabled = false;
-      }
-    }
-
-    async function refreshHomeData() {
-      await Promise.allSettled([runStockAnalysis(), runEtfAnalysis()]);
-    }
-
-    dom.navButtons.forEach(btn => btn.addEventListener("click", () => switchView(btn.dataset.view)));
-    dom.addStockBtn.addEventListener("click", addStock);
-    dom.runStockBtn.addEventListener("click", runStockAnalysis);
-    dom.addEtfBtn.addEventListener("click", addEtf);
-    dom.runEtfBtn.addEventListener("click", runEtfAnalysis);
-    dom.refreshHomeBtn.addEventListener("click", refreshHomeData);
-
-    window.deleteStock = deleteStock;
-    window.deleteEtf = deleteEtf;
-
-    Promise.allSettled([loadStocks(), loadEtfs()]).then(renderHome);
-  </script>
+  <script src="/frontend/app.js"></script>
 </body>
 </html>

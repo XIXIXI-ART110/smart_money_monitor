@@ -10,8 +10,15 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from config import ENV_PATH, ETF_WATCHLIST_PATH, LOGGER, WATCHLIST_PATH, get_public_runtime_config, update_env_config
-from modules.etf_service import run_etf_once_service
+from modules.etf_service import analyze_single_etf_service, get_default_etf_list_service, run_etf_once_service
 from modules.etf_watchlist_service import add_etf, delete_etf, load_etf_watchlist
+from modules.index_service import get_index_detail_service, get_index_options_service, get_indexes_service
+from modules.opportunity_service import (
+    get_auto_recommendation,
+    get_low_opportunity_pool,
+    get_opportunity_detail,
+    get_stock_low_opportunity_pool,
+)
 from modules.opportunity_review import calculate_hit_stats, load_opportunity_history, review_opportunities
 from modules.report_service import get_latest_report, get_report_by_filename, list_reports
 from modules.run_service import run_once_service
@@ -68,6 +75,37 @@ def error_response(message: str, data: dict[str, Any] | None = None) -> dict[str
 def serve_index() -> FileResponse:
     """Serve the local frontend entry page."""
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/low")
+def get_low_opportunities():
+    return [
+        {
+            "code": "510300",
+            "name": "沪深300ETF",
+            "score": 82,
+            "tag": "推荐",
+            "reason": "回撤后企稳"
+        },
+        {
+            "code": "159915",
+            "name": "创业板ETF",
+            "score": 74,
+            "tag": "观察",
+            "reason": "低位震荡"
+        }
+    ]
+
+
+@app.get("/recommend")
+def get_recommend():
+    return {
+        "code": "510300",
+        "name": "沪深300ETF",
+        "score": 82,
+        "reason": "回撤后企稳，均线拐头，量能改善",
+        "suggestion": "适合观察低位布局机会，不建议追高"
+    }
 
 
 @app.get("/api/health")
@@ -203,11 +241,199 @@ def api_run_etf_once() -> dict[str, Any]:
     return run_etf_once_service()
 
 
+@app.get("/api/etf/list")
+def get_default_etf_list_api() -> dict[str, Any]:
+    """Return the default ETF card list for the ETF recommendation page."""
+    result = get_default_etf_list_service()
+    return success_response(
+        "etf list loaded",
+        {
+            "etfs": result.get("etfs", []),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/etfs")
+@app.get("/list")
+def get_default_etf_list_compat_api() -> dict[str, Any]:
+    """Compatibility aliases for older ETF list requests."""
+    result = get_default_etf_list_service()
+    return success_response(
+        "etf list loaded",
+        {
+            "etfs": result.get("etfs", []),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/api/etf/analyze")
+def analyze_single_etf_api(code: str) -> dict[str, Any]:
+    """Return detailed analysis for one ETF code."""
+    result = analyze_single_etf_service(code)
+    if not result.get("ok", False):
+        return error_response(
+            str(result.get("message", "ETF analysis failed")),
+            {
+                "etf": result.get("etf", {}),
+                "elapsed_seconds": result.get("elapsed_seconds", 0),
+            },
+        )
+
+    return success_response(
+        "etf analysis loaded",
+        {
+            "etf": result.get("etf", {}),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/api/indexes")
+@app.get("/indexes")
+def get_indexes_api() -> dict[str, Any]:
+    """Return the default selected index board for the ETF page."""
+    result = get_indexes_service()
+    return success_response(
+        "indexes loaded",
+        {
+            "indexes": result.get("indexes", []),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/api/indexes/options")
+@app.get("/options")
+def get_index_options_api() -> dict[str, Any]:
+    """Return the full addable index pool for the settings modal."""
+    result = get_index_options_service()
+    return success_response(
+        "index options loaded",
+        {
+            "options": result.get("options", []),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/api/indexes/detail")
+@app.get("/indexes/detail")
+@app.get("/detail")
+def get_index_detail_api(code: str) -> dict[str, Any]:
+    """Return detail data for one index card."""
+    result = get_index_detail_service(code)
+    if not result.get("ok", False):
+        return error_response(
+            str(result.get("message", "index detail failed")),
+            {
+                "index": result.get("index", {}),
+                "elapsed_seconds": result.get("elapsed_seconds", 0),
+            },
+        )
+
+    return success_response(
+        "index detail loaded",
+        {
+            "index": result.get("index", {}),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/api/index/list")
+def get_index_board_api() -> dict[str, Any]:
+    """Compatibility alias for the old index board route."""
+    result = get_indexes_service()
+    return success_response(
+        "index board loaded",
+        {
+            "indices": result.get("indexes", []),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
+@app.get("/api/index/analyze")
+def analyze_index_api(code: str) -> dict[str, Any]:
+    """Compatibility alias for the old index detail route."""
+    result = get_index_detail_service(code)
+    if not result.get("ok", False):
+        return error_response(
+            str(result.get("message", "index analysis failed")),
+            {
+                "index": result.get("index", {}),
+                "elapsed_seconds": result.get("elapsed_seconds", 0),
+            },
+        )
+
+    return success_response(
+        "index analysis loaded",
+        {
+            "index": result.get("index", {}),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+    )
+
+
 @app.get("/api/opportunity-history")
 def get_opportunity_history_api() -> dict[str, Any]:
     """Return saved opportunity recommendation history."""
     history = load_opportunity_history()
     return success_response("opportunity history loaded", {"history": history})
+
+
+@app.get("/api/opportunity/low")
+def get_low_opportunity_api() -> dict[str, Any]:
+    """Return the current low-position opportunity pool."""
+    return success_response(
+        "low opportunity pool loaded",
+        {
+            "items": get_low_opportunity_pool(),
+        },
+    )
+
+
+@app.get("/api/opportunity/recommend")
+def get_opportunity_recommend_api() -> dict[str, Any]:
+    """Return today's auto recommendation from the low-position pool."""
+    return success_response(
+        "opportunity recommendation loaded",
+        {
+            "item": get_auto_recommendation(),
+        },
+    )
+
+
+@app.get("/api/opportunity/detail")
+def get_opportunity_detail_api(code: str) -> dict[str, Any]:
+    """Return one low-position opportunity detail."""
+    item = get_opportunity_detail(code)
+    if item is None:
+        return error_response(
+            "opportunity not found",
+            {
+                "item": {},
+            },
+        )
+    return success_response(
+        "opportunity detail loaded",
+        {
+            "item": item,
+        },
+    )
+
+
+@app.get("/api/opportunity/stock_low")
+def get_stock_low_opportunity_api() -> dict[str, Any]:
+    """Return the current stock low-position opportunity pool."""
+    return success_response(
+        "stock low opportunity pool loaded",
+        {
+            "items": get_stock_low_opportunity_pool(),
+        },
+    )
 
 
 @app.get("/api/opportunity-stats")
