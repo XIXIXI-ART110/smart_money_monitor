@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -46,6 +47,13 @@ app = FastAPI(
     description="A-share research monitor backend service.",
     version="1.0.0",
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -79,33 +87,12 @@ def serve_index() -> FileResponse:
 
 @app.get("/low")
 def get_low_opportunities():
-    return [
-        {
-            "code": "510300",
-            "name": "沪深300ETF",
-            "score": 82,
-            "tag": "推荐",
-            "reason": "回撤后企稳"
-        },
-        {
-            "code": "159915",
-            "name": "创业板ETF",
-            "score": 74,
-            "tag": "观察",
-            "reason": "低位震荡"
-        }
-    ]
+    return get_low_opportunity_pool()
 
 
 @app.get("/recommend")
 def get_recommend():
-    return {
-        "code": "510300",
-        "name": "沪深300ETF",
-        "score": 82,
-        "reason": "回撤后企稳，均线拐头，量能改善",
-        "suggestion": "适合观察低位布局机会，不建议追高"
-    }
+    return get_auto_recommendation()
 
 
 @app.get("/api/health")
@@ -206,10 +193,20 @@ def remove_etf(code: str) -> dict[str, Any]:
     return success_response("etf deleted", {"etfs": etfs})
 
 
+@app.get("/api/run-once")
 @app.post("/api/run-once")
 def api_run_once() -> dict[str, Any]:
     """Execute one full monitoring cycle and return structured results."""
-    result = run_once_service(push_notification=True, print_report=False)
+    result = run_once_service(
+        push_notification=False,
+        print_report=False,
+        enable_ai_summary=False,
+        market_timeout_seconds=2.5,
+        fund_flow_timeout_seconds=2.5,
+        ai_timeout_seconds=4.0,
+        total_timeout_seconds=8.0,
+        max_workers=3,
+    )
     if not result["ok"]:
         return error_response(
             result["message"],

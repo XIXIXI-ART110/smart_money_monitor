@@ -62,16 +62,29 @@ const dom = {
   heatmap: document.getElementById("heatmap")
 };
 
+const API_BASE = (() => {
+  const configuredBase =
+    window.SMART_MONEY_API_BASE ||
+    document.querySelector('meta[name="smart-money-api-base"]')?.getAttribute("content") ||
+    "";
+  return String(configuredBase).trim().replace(/\/+$/, "");
+})();
+
+function apiPath(path) {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE}${path}`;
+}
+
 const api = {
-  stocks: "/api/stocks",
-  runStocks: "/api/run-once",
-  indexes: "/api/indexes",
-  indexOptions: "/api/indexes/options",
-  indexDetail: (code) => `/api/indexes/detail?code=${encodeURIComponent(code)}`,
-  lowOpportunity: "/api/opportunity/low",
-  stockLowOpportunity: "/api/opportunity/stock_low",
-  opportunityRecommend: "/api/opportunity/recommend",
-  opportunityDetail: (code) => `/api/opportunity/detail?code=${encodeURIComponent(code)}`
+  stocks: apiPath("/api/stocks"),
+  runStocks: apiPath("/api/run-once"),
+  indexes: apiPath("/api/indexes"),
+  indexOptions: apiPath("/api/indexes/options"),
+  indexDetail: (code) => apiPath(`/api/indexes/detail?code=${encodeURIComponent(code)}`),
+  lowOpportunity: apiPath("/api/opportunity/low"),
+  stockLowOpportunity: apiPath("/api/opportunity/stock_low"),
+  opportunityRecommend: apiPath("/api/opportunity/recommend"),
+  opportunityDetail: (code) => apiPath(`/api/opportunity/detail?code=${encodeURIComponent(code)}`)
 };
 
 const STATIC_LOW_OPPORTUNITY_ITEMS = [

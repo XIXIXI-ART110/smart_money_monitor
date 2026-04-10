@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import time
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +17,9 @@ from modules.notify import build_feishu_daily_report, send_feishu_text
 from modules.opportunity_review import save_daily_opportunity_record
 from modules.reporter import build_report, save_report_to_file
 from modules.watchlist_service import load_watchlist
+
+
+_TIMEOUT_SENTINEL = object()
 
 
 def _to_relative_path(path_str: str) -> str:
@@ -177,28 +183,184 @@ def _build_style_distribution(results: list[dict[str, Any]]) -> list[dict[str, A
     return distribution
 
 
+def _call_with_timeout(
+    func: Any,
+    *args: Any,
+    timeout_seconds: float,
+    step_name: str,
+    **kwargs: Any,
+) -> Any:
+    """Run one blocking step with timeout protection and timing logs."""
+    started = time.perf_counter()
+    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def runner() -> None:
+        try:
+            result_queue.put((True, func(*args, **kwargs)))
+        except Exception as exc:  # pragma: no cover - runtime safety
+            result_queue.put((False, exc))
+
+    # Daemon thread keeps a stuck data-source call from holding the API response open.
+    thread = threading.Thread(target=runner, name=f"run-once-step-{step_name}", daemon=True)
+    thread.start()
+    try:
+        ok, result = result_queue.get(timeout=timeout_seconds)
+        if not ok:
+            raise result
+        LOGGER.info("%s finished in %.3fs.", step_name, time.perf_counter() - started)
+        return result
+    except queue.Empty:
+        LOGGER.warning("%s timed out after %.2fs.", step_name, timeout_seconds)
+        return _TIMEOUT_SENTINEL
+    except FutureTimeoutError:
+        LOGGER.warning("%s timed out after %.2fs.", step_name, timeout_seconds)
+        return _TIMEOUT_SENTINEL
+    except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.warning("%s failed in %.3fs: %s", step_name, time.perf_counter() - started, exc)
+        return exc
+
+
+def _build_fast_summary(
+    name: str,
+    market_data: dict[str, Any],
+    analysis: dict[str, Any],
+    *,
+    error: str = "",
+) -> str:
+    """Build a fast summary without waiting on external AI services."""
+    if error:
+        return f"{name} 本次仅返回基础结果：{error}"
+
+    summary_items = [str(item).strip() for item in (analysis.get("summary", []) or []) if str(item).strip()]
+    if summary_items:
+        return "；".join(summary_items[:2])
+
+    pct_change = market_data.get("pct_change")
+    if pct_change is not None:
+        return f"{name} 当前涨跌幅 {pct_change}%，建议继续观察量价配合。"
+    return f"{name} 已返回基础分析结果，建议结合后续量价变化继续观察。"
+
+
+def _build_error_result(code: str, name: str, error: str) -> dict[str, Any]:
+    """Return one safe stock result when a single stock fails."""
+    error_analysis = {
+        "signal": [],
+        "risk": [f"数据抓取失败: {error}"],
+        "summary": ["本次未能完成规则分析"],
+    }
+    return {
+        "code": code,
+        "name": name,
+        "status": "error",
+        "score": _calculate_score(error_analysis),
+        "error": error,
+        "market_data": {
+            "code": code,
+            "name": name,
+            "latest_price": None,
+            "pct_change": None,
+            "turnover": None,
+        },
+        "fund_flow": {},
+        "analysis": error_analysis,
+        "ai_summary": f"{name} 本次数据获取失败，建议稍后重试。",
+    }
+
+
 def process_stock(
     stock: dict[str, str],
     all_spot_data: dict[str, dict[str, Any]] | None = None,
+    *,
+    enable_ai_summary: bool = False,
+    market_timeout_seconds: float = 2.5,
+    fund_flow_timeout_seconds: float = 2.5,
+    ai_timeout_seconds: float = 4.0,
 ) -> dict[str, Any]:
     """Process one stock end to end and return a structured result."""
+    del all_spot_data  # compatibility placeholder; current fast path fetches per stock.
+    stock_started = time.perf_counter()
     code = normalize_code(stock["code"])
     name = stock.get("name", code)
-    LOGGER.info("Processing stock %s %s", code, name)
+    LOGGER.info("Processing stock %s", code)
+
+    market_error = ""
+    fund_error = ""
+    market_data: dict[str, Any] = {
+        "code": code,
+        "name": name,
+        "latest_price": None,
+        "pct_change": None,
+        "turnover": None,
+    }
+    fund_flow: dict[str, Any] = {}
 
     try:
-        market_data = fetch_stock_data(code, name)
-        if not market_data or market_data.get("status") == "error":
-            raise ValueError(str(market_data.get("error", f"未获取到实时行情数据: code={code}")))
+        market_result = _call_with_timeout(
+            fetch_stock_data,
+            code,
+            name,
+            timeout_seconds=market_timeout_seconds,
+            step_name=f"[{code}] fetch_stock_data",
+        )
+        if market_result is _TIMEOUT_SENTINEL:
+            market_error = "实时行情超时"
+        elif isinstance(market_result, Exception):
+            market_error = str(market_result)
+        elif isinstance(market_result, dict) and market_result and market_result.get("status") != "error":
+            market_data.update(market_result)
+        else:
+            market_error = str((market_result or {}).get("error", "未获取到实时行情数据"))
 
-        market_data["code"] = code
-        market_data["name"] = name
+        fund_result = _call_with_timeout(
+            get_individual_fund_flow,
+            code,
+            timeout_seconds=fund_flow_timeout_seconds,
+            step_name=f"[{code}] get_individual_fund_flow",
+        )
+        if fund_result is _TIMEOUT_SENTINEL:
+            fund_error = "资金流超时"
+        elif isinstance(fund_result, Exception):
+            fund_error = str(fund_result)
+        elif isinstance(fund_result, dict):
+            fund_flow = fund_result
+        else:
+            fund_error = "资金流返回为空"
 
-        fund_flow = get_individual_fund_flow(code)
-        analysis = analyze_stock(market_data, fund_flow)
-        ai_summary = summarize_with_ai(name, market_data, analysis)
+        analysis_started = time.perf_counter()
+        analysis = analyze_stock(market_data, fund_flow or None)
+        LOGGER.info("[%s] analyze_stock finished in %.3fs.", code, time.perf_counter() - analysis_started)
         score = _calculate_score(analysis)
 
+        has_market = any(market_data.get(key) is not None for key in ("latest_price", "pct_change", "turnover"))
+        has_fund = (fund_flow or {}).get("main_net_inflow") is not None
+        if not has_market and not has_fund:
+            error_parts = [part for part in (market_error, fund_error) if part]
+            return _build_error_result(code, name, "；".join(error_parts) or "未获取到有效分析数据")
+
+        if enable_ai_summary:
+            ai_result = _call_with_timeout(
+                summarize_with_ai,
+                name,
+                market_data,
+                analysis,
+                timeout_seconds=ai_timeout_seconds,
+                step_name=f"[{code}] summarize_with_ai",
+            )
+            if ai_result is _TIMEOUT_SENTINEL or isinstance(ai_result, Exception):
+                ai_summary = _build_fast_summary(name, market_data, analysis, error="AI 摘要超时")
+            else:
+                ai_summary = str(ai_result)
+        else:
+            ai_summary = _build_fast_summary(name, market_data, analysis, error=market_error or fund_error)
+
+        LOGGER.info(
+            "[%s] stock pipeline finished in %.3fs. market_error=%s fund_error=%s score=%s",
+            code,
+            time.perf_counter() - stock_started,
+            bool(market_error),
+            bool(fund_error),
+            score,
+        )
         return {
             "code": code,
             "name": name,
@@ -211,35 +373,33 @@ def process_stock(
         }
     except Exception as exc:  # pragma: no cover - runtime safety
         LOGGER.exception("Failed to process stock %s %s: %s", code, name, exc)
-        error_analysis = {
-            "signal": [],
-            "risk": [f"数据抓取失败: {exc}"],
-            "summary": ["本次未能完成规则分析"],
-        }
-        return {
-            "code": code,
-            "name": name,
-            "status": "error",
-            "score": _calculate_score(error_analysis),
-            "error": str(exc),
-            "market_data": {},
-            "fund_flow": None,
-            "analysis": error_analysis,
-            "ai_summary": "本次数据获取失败，建议稍后重试并结合其他公开信息继续观察。",
-        }
+        return _build_error_result(code, name, str(exc))
 
 
 def run_once_service(
     *,
     push_notification: bool = True,
     print_report: bool = False,
+    enable_ai_summary: bool = False,
+    market_timeout_seconds: float = 2.5,
+    fund_flow_timeout_seconds: float = 2.5,
+    ai_timeout_seconds: float = 4.0,
+    total_timeout_seconds: float = 10.0,
+    max_workers: int = 3,
 ) -> dict[str, Any]:
     """Execute the full run-once workflow and return a structured payload."""
     ensure_runtime_directories()
     start_time = time.perf_counter()
-    LOGGER.info("Run-once service started.")
+    LOGGER.info(
+        "Run-once service started. enable_ai_summary=%s push_notification=%s total_timeout=%.2fs",
+        enable_ai_summary,
+        push_notification,
+        total_timeout_seconds,
+    )
 
+    watchlist_started = time.perf_counter()
     stocks = load_watchlist()
+    LOGGER.info("Watchlist loaded in %.3fs. stock_count=%s", time.perf_counter() - watchlist_started, len(stocks))
     if not stocks:
         message = "请先添加自选股"
         LOGGER.warning(message)
@@ -257,39 +417,106 @@ def run_once_service(
             },
         }
 
-    results = [process_stock(stock) for stock in stocks]
+    results: list[dict[str, Any]] = []
+    stock_executor = ThreadPoolExecutor(
+        max_workers=max(1, min(max_workers, len(stocks))),
+        thread_name_prefix="run-once-stock",
+    )
+    future_map = {
+        stock_executor.submit(
+            process_stock,
+            stock,
+            None,
+            enable_ai_summary=enable_ai_summary,
+            market_timeout_seconds=market_timeout_seconds,
+            fund_flow_timeout_seconds=fund_flow_timeout_seconds,
+            ai_timeout_seconds=ai_timeout_seconds,
+        ): stock
+        for stock in stocks
+    }
+    stock_loop_started = time.perf_counter()
+
+    try:
+        try:
+            for future in as_completed(future_map, timeout=total_timeout_seconds):
+                stock = future_map.pop(future)
+                code = normalize_code(stock["code"])
+                name = stock.get("name", code)
+                try:
+                    result = future.result()
+                except Exception as exc:  # pragma: no cover - runtime safety
+                    LOGGER.exception("Unhandled stock future failure for %s %s: %s", code, name, exc)
+                    result = _build_error_result(code, name, str(exc))
+                results.append(result)
+        except FutureTimeoutError:
+            LOGGER.warning("Run-once stock loop timed out after %.2fs.", total_timeout_seconds)
+    finally:
+        unfinished_stocks = [stock for future, stock in future_map.items() if not future.done()]
+        stock_executor.shutdown(wait=False, cancel_futures=True)
+
+    for stock in unfinished_stocks:
+        code = normalize_code(stock["code"])
+        name = stock.get("name", code)
+        LOGGER.warning("Stock %s %s exceeded overall run timeout and was skipped.", code, name)
+        results.append(_build_error_result(code, name, "单只股票处理超时，已跳过"))
+
+    LOGGER.info(
+        "Stock processing finished in %.3fs. completed=%s total=%s",
+        time.perf_counter() - stock_loop_started,
+        len(results),
+        len(stocks),
+    )
+
     results = sorted(results, key=lambda item: int(item.get("score", 0)), reverse=True)
 
+    sentiment_started = time.perf_counter()
     opportunity_rank = _build_opportunity_rank(results)
     market_sentiment = analyze_market_sentiment(results)
     style_distribution = _build_style_distribution(results)
-    save_daily_opportunity_record(
-        market_conclusion=str(market_sentiment.get("summary", "")),
-        opportunity_rank=opportunity_rank,
-    )
+    LOGGER.info("Post-analysis aggregation finished in %.3fs.", time.perf_counter() - sentiment_started)
 
+    review_started = time.perf_counter()
+    try:
+        save_daily_opportunity_record(
+            market_conclusion=str(market_sentiment.get("summary", "")),
+            opportunity_rank=opportunity_rank,
+        )
+        LOGGER.info("Opportunity review save finished in %.3fs.", time.perf_counter() - review_started)
+    except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.exception("Failed to save opportunity review: %s", exc)
+
+    report_started = time.perf_counter()
     report_content = build_report(results)
     report_path = save_report_to_file(report_content)
+    LOGGER.info("Report build/save finished in %.3fs.", time.perf_counter() - report_started)
 
     if print_report:
         print(report_content)
 
-    elapsed_seconds = round(time.perf_counter() - start_time, 3)
-
     notification_result: dict[str, Any]
+    notification_started = time.perf_counter()
     if push_notification:
-        feishu_message = build_feishu_daily_report(
-            opportunity_rank=opportunity_rank,
-            market_sentiment=market_sentiment,
-            results=results,
-        )
-        notification_result = send_feishu_text(feishu_message)
+        try:
+            feishu_message = build_feishu_daily_report(
+                opportunity_rank=opportunity_rank,
+                market_sentiment=market_sentiment,
+                results=results,
+            )
+            notification_result = send_feishu_text(feishu_message)
+        except Exception as exc:  # pragma: no cover - runtime safety
+            LOGGER.exception("Failed to send notification: %s", exc)
+            notification_result = {
+                "sent": False,
+                "reason": str(exc),
+            }
     else:
         notification_result = {
             "sent": False,
             "reason": "notification_disabled",
         }
+    LOGGER.info("Notification step finished in %.3fs.", time.perf_counter() - notification_started)
 
+    elapsed_seconds = round(time.perf_counter() - start_time, 3)
     LOGGER.info("Feishu notification result: %s", notification_result)
     LOGGER.info("Run-once service finished in %.3f seconds.", elapsed_seconds)
 
