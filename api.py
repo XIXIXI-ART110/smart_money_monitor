@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from config import ENV_PATH, ETF_WATCHLIST_PATH, LOGGER, WATCHLIST_PATH, get_public_runtime_config, update_env_config
 from modules.etf_service import analyze_single_etf_service, get_default_etf_list_service, run_etf_once_service
 from modules.etf_watchlist_service import add_etf, delete_etf, load_etf_watchlist
+from modules.fetch_market import normalize_code
 from modules.index_service import get_index_detail_service, get_index_options_service, get_indexes_service
 from modules.opportunity_service import (
     SCOPE_NAMES,
@@ -23,7 +24,7 @@ from modules.opportunity_service import (
 )
 from modules.opportunity_review import calculate_hit_stats, load_opportunity_history, review_opportunities
 from modules.report_service import get_latest_report, get_report_by_filename, list_reports
-from modules.run_service import run_once_service
+from modules.run_service import process_stock
 from modules.stock_search_service import search_stocks
 from modules.watchlist_service import add_stock, delete_stock, load_watchlist
 
@@ -66,6 +67,11 @@ BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+
+DEFAULT_SINGLE_RUN_ONCE_STOCK = {
+    "code": "002594",
+    "name": "比亚迪",
+}
 
 
 
@@ -167,6 +173,7 @@ def error_json_response(
         "message": message,
         "data": None,
         "error_detail": details or {},
+        "failed_details": (details or {}).get("failed_details", {}),
     }
     _log_api_response(
         route,
@@ -177,6 +184,67 @@ def error_json_response(
         },
     )
     return JSONResponse(status_code=status_code, content=payload)
+
+
+def _single_stock_error_response(route: str, error_detail: dict[str, Any], *, status_code: int = 502) -> JSONResponse:
+    """Return one explicit single-stock failure payload for /api/run-once."""
+    payload = {
+        "ok": False,
+        "message": "single stock analysis failed",
+        "data": None,
+        "error_detail": error_detail,
+    }
+    _log_api_response(route, {"ok": False, "message": payload["message"], "data": error_detail})
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def _resolve_single_run_once_stock(request: Request) -> dict[str, str]:
+    """Resolve the one stock used by /api/run-once during the single-stock rollout."""
+    target_code = request.query_params.get("code", "").strip()
+    target_name = request.query_params.get("name", "").strip()
+    if target_code:
+        normalized_code = normalize_code(target_code)
+        return {
+            "code": normalized_code,
+            "name": target_name or normalized_code,
+        }
+    return dict(DEFAULT_SINGLE_RUN_ONCE_STOCK)
+
+
+def _build_single_stock_error_detail(stock: dict[str, str], result: dict[str, Any] | None) -> dict[str, Any]:
+    """Build one precise failure detail payload for the current single-stock run."""
+    result = result or {}
+    market_data = result.get("market_data", {}) if isinstance(result.get("market_data"), dict) else {}
+    fund_flow = result.get("fund_flow", {}) if isinstance(result.get("fund_flow"), dict) else {}
+    failure_detail = result.get("failure_detail", {}) if isinstance(result.get("failure_detail"), dict) else {}
+    diagnostics = result.get("diagnostics", {}) if isinstance(result.get("diagnostics"), dict) else {}
+    market_diag = diagnostics.get("market_data", {}) if isinstance(diagnostics.get("market_data"), dict) else {}
+    fund_diag = diagnostics.get("fund_flow", {}) if isinstance(diagnostics.get("fund_flow"), dict) else {}
+    final_diag = diagnostics.get("final", {}) if isinstance(diagnostics.get("final"), dict) else {}
+
+    market_source = str(market_data.get("data_source") or market_diag.get("data_source") or "")
+    fund_source = str(fund_flow.get("data_source") or fund_diag.get("data_source") or "")
+    source_parts = [part for part in (f"market={market_source}" if market_source else "", f"fund={fund_source}" if fund_source else "") if part]
+
+    return {
+        "symbol": stock["code"],
+        "stage": str(failure_detail.get("stage") or "assemble"),
+        "reason": str(
+            failure_detail.get("reason")
+            or result.get("error")
+            or final_diag.get("reason")
+            or "单股分析未返回结果"
+        ),
+        "data_source": "; ".join(source_parts),
+        "market_snapshot": {
+            "latest_price": market_data.get("latest_price"),
+            "pct_change": market_data.get("pct_change"),
+            "turnover": market_data.get("turnover"),
+        },
+        "fund_snapshot": {
+            "main_net_inflow": fund_flow.get("main_net_inflow"),
+        },
+    }
 
 
 @app.get("/")
@@ -322,78 +390,87 @@ def remove_etf(code: str) -> dict[str, Any]:
 @app.get("/api/run-once")
 @app.post("/api/run-once")
 def api_run_once(request: Request) -> JSONResponse:
-    """Execute one full monitoring cycle and return structured results."""
+    """Execute the current single-stock monitoring cycle and return structured results."""
     route = "/api/run-once"
     _log_api_request_start(route, method=request.method)
+    stock = _resolve_single_run_once_stock(request)
+    LOGGER.info("Run-once API locked to single stock: %s %s", stock["code"], stock["name"])
     try:
-        result = run_once_service(
-            push_notification=False,
-            print_report=False,
+        result = process_stock(
+            stock,
+            None,
             enable_ai_summary=False,
             market_timeout_seconds=1.8,
             fund_flow_timeout_seconds=1.4,
-            ai_timeout_seconds=4.0,
-            total_timeout_seconds=8.0,
-            max_workers=4,
         )
     except Exception as exc:  # pragma: no cover - runtime safety
         LOGGER.exception("Run-once API failed before response serialization: %s", exc)
-        return error_json_response(
-            "运行分析失败，请检查公网环境日志",
-            status_code=500,
-            route=route,
-            details={
-                "reason": "route_exception",
-                "error": str(exc),
+        return _single_stock_error_response(
+            route,
+            {
+                "symbol": stock["code"],
+                "stage": "assemble",
+                "reason": str(exc),
+                "data_source": "",
+                "market_snapshot": {
+                    "latest_price": None,
+                    "pct_change": None,
+                    "turnover": None,
+                },
             },
+            status_code=500,
         )
 
     if not isinstance(result, dict):
         LOGGER.error("Run-once API returned non-dict result: %r", result)
-        return error_json_response(
-            "运行分析返回异常结果",
-            status_code=500,
-            route=route,
-            details={
-                "reason": "invalid_result",
-                "result_type": type(result).__name__,
+        return _single_stock_error_response(
+            route,
+            {
+                "symbol": stock["code"],
+                "stage": "assemble",
+                "reason": f"invalid_result:{type(result).__name__}",
+                "data_source": "",
+                "market_snapshot": {
+                    "latest_price": None,
+                    "pct_change": None,
+                    "turnover": None,
+                },
             },
+            status_code=500,
         )
 
-    results = result.get("results", [])
-    failed_symbols = result.get("failed_symbols", [])
-    if not result.get("ok", False) or not results:
-        return error_json_response(
-            str(result.get("message", "运行分析失败")),
+    if result.get("status") != "ok":
+        return _single_stock_error_response(
+            route,
+            _build_single_stock_error_detail(stock, result),
             status_code=502,
-            route=route,
-            details={
-                "reason": "no_usable_results" if not results else "service_error",
-                "report_path": result.get("report_path"),
-                "results": results,
-                "failed_symbols": failed_symbols,
-                "elapsed_seconds": result.get("elapsed_seconds"),
-                "timing": result.get("timing", {}),
-                "notification": result.get("notification", {}),
-            },
         )
 
     payload = success_response(
-        result.get("message", "run once completed"),
+        "single stock analysis completed",
         {
-            "report_path": result["report_path"],
-            "report_content": result["report_content"],
-            "results": results,
-            "failed_symbols": failed_symbols,
-            "opportunity_rank": result.get("opportunity_rank", []),
-            "elapsed_seconds": result["elapsed_seconds"],
-            "timing": result.get("timing", {}),
-            "market_sentiment": result.get("market_sentiment", {}),
-            "style_distribution": result.get("style_distribution", []),
-            "notification": result["notification"],
+            "results": [result],
+            "failed_symbols": [],
+            "failed_details": {},
+            "opportunity_rank": [],
+            "elapsed_seconds": (result.get("timing", {}) or {}).get("stock_seconds", 0),
+            "timing": {
+                "stock_count": 1,
+                "completed_count": 1,
+                "failed_count": 0,
+                "partial": False,
+                **(result.get("timing", {}) or {}),
+            },
+            "market_sentiment": {},
+            "style_distribution": [],
+            "notification": {
+                "sent": False,
+                "reason": "notification_disabled",
+            },
         },
         route=route,
     )
+    payload["failed_details"] = {}
     return JSONResponse(status_code=200, content=payload)
 
 

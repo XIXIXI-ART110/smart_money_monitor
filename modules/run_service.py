@@ -297,6 +297,11 @@ def _build_error_result(code: str, name: str, error: str) -> dict[str, Any]:
         "status": "error",
         "score": _calculate_score(error_analysis),
         "error": error,
+        "failure_detail": {
+            "stage": "market_data / fund_flow",
+            "reason": error,
+            "data_source": {},
+        },
         "market_data": {
             "code": code,
             "name": name,
@@ -307,6 +312,111 @@ def _build_error_result(code: str, name: str, error: str) -> dict[str, Any]:
         "fund_flow": {},
         "analysis": error_analysis,
         "ai_summary": f"{name} 本次数据获取失败，建议稍后重试。",
+        "diagnostics": {
+            "market_data": {
+                "has_latest_price": False,
+                "has_pct_change": False,
+                "has_turnover": False,
+                "latest_price": None,
+                "pct_change": None,
+                "turnover": None,
+                "data_source": "",
+                "missing_fields": ["latest_price", "pct_change", "turnover"],
+            },
+            "fund_flow": {
+                "has_main_net_inflow": False,
+                "main_net_inflow": None,
+                "data_source": "",
+            },
+            "final": {
+                "included_in_results": False,
+                "reason": error,
+            },
+        },
+    }
+
+
+def _build_stock_diagnostics(
+    market_data: dict[str, Any],
+    fund_flow: dict[str, Any],
+    *,
+    market_error: str = "",
+    fund_error: str = "",
+    included_in_results: bool,
+    final_reason: str,
+) -> dict[str, Any]:
+    """Build one stock-level diagnostic payload for API responses and logs."""
+    missing_fields = list(market_data.get("missing_fields") or [])
+    has_latest_price = market_data.get("latest_price") is not None
+    has_pct_change = market_data.get("pct_change") is not None
+    has_turnover = market_data.get("turnover") is not None
+    has_fund = fund_flow.get("main_net_inflow") is not None
+    return {
+        "market_data": {
+            "has_latest_price": has_latest_price,
+            "has_pct_change": has_pct_change,
+            "has_turnover": has_turnover,
+            "latest_price": market_data.get("latest_price"),
+            "pct_change": market_data.get("pct_change"),
+            "turnover": market_data.get("turnover"),
+            "data_source": str(market_data.get("data_source", "")),
+            "missing_fields": missing_fields,
+            "error": market_error,
+        },
+        "fund_flow": {
+            "has_main_net_inflow": has_fund,
+            "main_net_inflow": fund_flow.get("main_net_inflow"),
+            "data_source": str(fund_flow.get("data_source", "")),
+            "error": fund_error,
+        },
+        "final": {
+            "included_in_results": included_in_results,
+            "reason": final_reason,
+        },
+    }
+
+
+def _build_failure_detail(
+    market_data: dict[str, Any],
+    fund_flow: dict[str, Any],
+    *,
+    market_error: str = "",
+    fund_error: str = "",
+    final_reason: str = "",
+) -> dict[str, Any]:
+    """Build one normalized per-stock failure detail payload."""
+    has_market = any(market_data.get(key) is not None for key in ("latest_price", "pct_change", "turnover"))
+    has_fund = fund_flow.get("main_net_inflow") is not None
+    if not has_market and not has_fund:
+        stage = "market_data / fund_flow"
+    elif not has_market:
+        stage = "market_data"
+    elif not has_fund:
+        stage = "fund_flow"
+    else:
+        stage = "assemble"
+
+    reason_parts = [part for part in (final_reason, market_error, fund_error) if part]
+    return {
+        "stage": stage,
+        "reason": "；".join(dict.fromkeys(reason_parts)) or "未进入结果集",
+        "data_source": {
+            "market_data": str(market_data.get("data_source", "")),
+            "fund_flow": str(fund_flow.get("data_source", "")),
+        },
+        "market_data": {
+            "has_latest_price": market_data.get("latest_price") is not None,
+            "has_pct_change": market_data.get("pct_change") is not None,
+            "has_turnover": market_data.get("turnover") is not None,
+            "latest_price": market_data.get("latest_price"),
+            "pct_change": market_data.get("pct_change"),
+            "turnover": market_data.get("turnover"),
+            "missing_fields": list(market_data.get("missing_fields") or []),
+        },
+        "fund_flow": {
+            "has_main_net_inflow": has_fund,
+            "main_net_inflow": fund_flow.get("main_net_inflow"),
+        },
     }
 
 
@@ -389,9 +499,27 @@ def process_stock(
 
         has_market = any(market_data.get(key) is not None for key in ("latest_price", "pct_change", "turnover"))
         has_fund = (fund_flow or {}).get("main_net_inflow") is not None
+        diagnostics = _build_stock_diagnostics(
+            market_data,
+            fund_flow,
+            market_error=market_error,
+            fund_error=fund_error,
+            included_in_results=bool(has_market or has_fund),
+            final_reason="已进入结果集" if (has_market or has_fund) else "未获取到有效分析数据",
+        )
+        LOGGER.info("[%s] stock diagnostics: %s", code, diagnostics)
         if not has_market and not has_fund:
             error_parts = [part for part in (market_error, fund_error) if part]
-            return _build_error_result(code, name, "；".join(error_parts) or "未获取到有效分析数据")
+            error_result = _build_error_result(code, name, "；".join(error_parts) or "未获取到有效分析数据")
+            error_result["failure_detail"] = _build_failure_detail(
+                market_data,
+                fund_flow,
+                market_error=market_error,
+                fund_error=fund_error,
+                final_reason="未获取到有效分析数据",
+            )
+            error_result["diagnostics"] = diagnostics
+            return error_result
 
         if enable_ai_summary:
             ai_result = _call_with_timeout(
@@ -427,6 +555,7 @@ def process_stock(
             "fund_flow": fund_flow,
             "analysis": analysis,
             "ai_summary": ai_summary,
+            "diagnostics": diagnostics,
             "timing": {
                 "market_seconds": market_elapsed,
                 "fund_flow_seconds": fund_elapsed,
@@ -449,6 +578,7 @@ def run_once_service(
     ai_timeout_seconds: float = 4.0,
     total_timeout_seconds: float = 10.0,
     max_workers: int = 3,
+    stocks: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Execute the full run-once workflow and return a structured payload."""
     ensure_runtime_directories()
@@ -461,9 +591,14 @@ def run_once_service(
     )
 
     watchlist_started = time.perf_counter()
-    stocks = load_watchlist()
-    LOGGER.info("Watchlist loaded in %.3fs. stock_count=%s", time.perf_counter() - watchlist_started, len(stocks))
-    if not stocks:
+    selected_stocks = list(stocks) if stocks is not None else load_watchlist()
+    LOGGER.info(
+        "Watchlist loaded in %.3fs. stock_count=%s custom_input=%s",
+        time.perf_counter() - watchlist_started,
+        len(selected_stocks),
+        stocks is not None,
+    )
+    if not selected_stocks:
         message = "请先添加自选股"
         LOGGER.warning(message)
         return {
@@ -483,7 +618,8 @@ def run_once_service(
 
     results: list[dict[str, Any]] = []
     failed_symbol_set: set[str] = set()
-    effective_workers = max(1, min(max_workers, len(stocks), 6))
+    failed_details: dict[str, dict[str, Any]] = {}
+    effective_workers = max(1, min(max_workers, len(selected_stocks), 6))
     stock_executor = ThreadPoolExecutor(
         max_workers=effective_workers,
         thread_name_prefix="run-once-stock",
@@ -498,7 +634,7 @@ def run_once_service(
             fund_flow_timeout_seconds=fund_flow_timeout_seconds,
             ai_timeout_seconds=ai_timeout_seconds,
         ): stock
-        for stock in stocks
+        for stock in selected_stocks
     }
     stock_loop_started = time.perf_counter()
     stock_loop_timed_out = False
@@ -514,12 +650,18 @@ def run_once_service(
                 except Exception as exc:  # pragma: no cover - runtime safety
                     LOGGER.warning("Stock %s %s failed and was skipped: %s", code, name, exc, exc_info=True)
                     failed_symbol_set.add(code)
+                    failed_details[code] = {
+                        "stage": "assemble",
+                        "reason": str(exc),
+                        "data_source": {},
+                    }
                     continue
 
                 if result.get("status") != "ok":
                     error_message = str(result.get("error") or "unknown stock processing error")
                     LOGGER.warning("Stock %s %s returned error result and was skipped: %s", code, name, error_message)
                     failed_symbol_set.add(code)
+                    failed_details[code] = dict(result.get("failure_detail") or {})
                     continue
                 results.append(result)
         except FutureTimeoutError:
@@ -538,19 +680,24 @@ def run_once_service(
         name = stock.get("name", code)
         LOGGER.warning("Stock %s %s exceeded overall run timeout and was skipped.", code, name)
         failed_symbol_set.add(code)
+        failed_details[code] = {
+            "stage": "assemble",
+            "reason": f"超过整体运行超时 {total_timeout_seconds:.1f}s",
+            "data_source": {},
+        }
 
     LOGGER.info(
         "Stock processing finished in %.3fs. completed=%s total=%s workers=%s",
         time.perf_counter() - stock_loop_started,
         len(results),
-        len(stocks),
+        len(selected_stocks),
         effective_workers,
     )
 
     results = sorted(results, key=lambda item: int(item.get("score", 0)), reverse=True)
     failed_symbols = [
         code
-        for code in dict.fromkeys(normalize_code(stock["code"]) for stock in stocks)
+        for code in dict.fromkeys(normalize_code(stock["code"]) for stock in selected_stocks)
         if code in failed_symbol_set
     ]
     if results and failed_symbols:
@@ -562,7 +709,7 @@ def run_once_service(
 
     stock_timings = [item.get("timing", {}) for item in results if isinstance(item.get("timing"), dict)]
     timing_summary = {
-        "stock_count": len(stocks),
+        "stock_count": len(selected_stocks),
         "completed_count": len(results),
         "failed_count": len(failed_symbols),
         "max_workers": effective_workers,
@@ -642,6 +789,7 @@ def run_once_service(
         "report_content": report_content,
         "results": results,
         "failed_symbols": failed_symbols,
+        "failed_details": failed_details,
         "opportunity_rank": opportunity_rank,
         "elapsed_seconds": elapsed_seconds,
         "market_sentiment": market_sentiment,

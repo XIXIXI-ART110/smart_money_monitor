@@ -55,7 +55,7 @@ def _normalize_fund_flow_row(code: str, row: Mapping[str, Any]) -> dict[str, Any
     }
 
 
-def _call_fund_flow_api(code: str, market: str) -> pd.DataFrame:
+def _call_fund_flow_api(code: str, market: str) -> tuple[pd.DataFrame, str]:
     """Try multiple call signatures for akshare fund flow APIs."""
     last_error: Exception | None = None
     for func_name in FUND_FLOW_API_CANDIDATES:
@@ -82,7 +82,7 @@ def _call_fund_flow_api(code: str, market: str) -> pd.DataFrame:
                         args,
                         kwargs,
                     )
-                    return dataframe
+                    return dataframe, f"akshare.{func_name}"
             except TypeError as exc:
                 last_error = exc
                 continue
@@ -112,7 +112,7 @@ def get_individual_fund_flow(code: str) -> dict[str, Any] | None:
         return None
 
     try:
-        dataframe = _call_fund_flow_api(normalized_code, market)
+        dataframe, data_source = _call_fund_flow_api(normalized_code, market)
     except Exception as exc:  # pragma: no cover - runtime safety
         LOGGER.exception(
             "Failed to fetch fund flow for stock %s on market %s: %s",
@@ -129,6 +129,7 @@ def get_individual_fund_flow(code: str) -> dict[str, Any] | None:
     try:
         latest_row = dataframe.iloc[-1].to_dict()
         normalized = _normalize_fund_flow_row(normalized_code, latest_row)
+        normalized["data_source"] = data_source
         LOGGER.info("Fetched latest fund flow for stock %s.", normalized_code)
         return normalized
     except Exception as exc:  # pragma: no cover - runtime safety
