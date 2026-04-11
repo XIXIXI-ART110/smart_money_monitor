@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import random
-import time
 from typing import Any
 
 from config import LOGGER
@@ -47,8 +45,6 @@ def _build_error_payload(
 def fetch_stock_data(code: str, name: str | None = None) -> dict[str, Any]:
     """Fetch one stock with primary, backup, and final safe fallback."""
     normalized_code = stock_primary_provider.normalize_code(code)
-
-    time.sleep(random.uniform(0.2, 0.5))
 
     primary_error = ""
     try:

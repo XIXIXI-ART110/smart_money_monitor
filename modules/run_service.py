@@ -229,6 +229,28 @@ def _call_with_timeout(
         return exc
 
 
+def _timed_timeout_call(
+    func: Any,
+    *args: Any,
+    timeout_seconds: float,
+    step_name: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Run one timeout-protected step and preserve elapsed timing for aggregation."""
+    started = time.perf_counter()
+    result = _call_with_timeout(
+        func,
+        *args,
+        timeout_seconds=timeout_seconds,
+        step_name=step_name,
+        **kwargs,
+    )
+    return {
+        "result": result,
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+
+
 def _build_fast_summary(
     name: str,
     market_data: dict[str, Any],
@@ -314,15 +336,32 @@ def process_stock(
         "turnover": None,
     }
     fund_flow: dict[str, Any] = {}
+    market_elapsed = 0.0
+    fund_elapsed = 0.0
 
     try:
-        market_result = _call_with_timeout(
-            fetch_stock_data,
-            code,
-            name,
-            timeout_seconds=market_timeout_seconds,
-            step_name=f"[{code}] fetch_stock_data",
-        )
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix=f"stock-io-{code}") as io_executor:
+            market_future = io_executor.submit(
+                _timed_timeout_call,
+                fetch_stock_data,
+                code,
+                name,
+                timeout_seconds=market_timeout_seconds,
+                step_name=f"[{code}] fetch_stock_data",
+            )
+            fund_future = io_executor.submit(
+                _timed_timeout_call,
+                get_individual_fund_flow,
+                code,
+                timeout_seconds=fund_flow_timeout_seconds,
+                step_name=f"[{code}] get_individual_fund_flow",
+            )
+            market_call = market_future.result()
+            fund_call = fund_future.result()
+
+        market_elapsed = float(market_call.get("elapsed_seconds", 0.0))
+        fund_elapsed = float(fund_call.get("elapsed_seconds", 0.0))
+        market_result = market_call.get("result")
         if market_result is _TIMEOUT_SENTINEL:
             market_error = "实时行情超时"
         elif isinstance(market_result, Exception):
@@ -332,12 +371,7 @@ def process_stock(
         else:
             market_error = str((market_result or {}).get("error", "未获取到实时行情数据"))
 
-        fund_result = _call_with_timeout(
-            get_individual_fund_flow,
-            code,
-            timeout_seconds=fund_flow_timeout_seconds,
-            step_name=f"[{code}] get_individual_fund_flow",
-        )
+        fund_result = fund_call.get("result")
         if fund_result is _TIMEOUT_SENTINEL:
             fund_error = "资金流超时"
         elif isinstance(fund_result, Exception):
@@ -349,7 +383,8 @@ def process_stock(
 
         analysis_started = time.perf_counter()
         analysis = analyze_stock(market_data, fund_flow or None)
-        LOGGER.info("[%s] analyze_stock finished in %.3fs.", code, time.perf_counter() - analysis_started)
+        analysis_elapsed = round(time.perf_counter() - analysis_started, 3)
+        LOGGER.info("[%s] analyze_stock finished in %.3fs.", code, analysis_elapsed)
         score = _calculate_score(analysis)
 
         has_market = any(market_data.get(key) is not None for key in ("latest_price", "pct_change", "turnover"))
@@ -374,10 +409,11 @@ def process_stock(
         else:
             ai_summary = _build_fast_summary(name, market_data, analysis, error=market_error or fund_error)
 
+        stock_elapsed = round(time.perf_counter() - stock_started, 3)
         LOGGER.info(
             "[%s] stock pipeline finished in %.3fs. market_error=%s fund_error=%s score=%s",
             code,
-            time.perf_counter() - stock_started,
+            stock_elapsed,
             bool(market_error),
             bool(fund_error),
             score,
@@ -391,6 +427,12 @@ def process_stock(
             "fund_flow": fund_flow,
             "analysis": analysis,
             "ai_summary": ai_summary,
+            "timing": {
+                "market_seconds": market_elapsed,
+                "fund_flow_seconds": fund_elapsed,
+                "analysis_seconds": analysis_elapsed,
+                "stock_seconds": stock_elapsed,
+            },
         }
     except Exception as exc:  # pragma: no cover - runtime safety
         LOGGER.exception("Failed to process stock %s %s: %s", code, name, exc)
@@ -441,8 +483,9 @@ def run_once_service(
 
     results: list[dict[str, Any]] = []
     failed_symbol_set: set[str] = set()
+    effective_workers = max(1, min(max_workers, len(stocks), 6))
     stock_executor = ThreadPoolExecutor(
-        max_workers=max(1, min(max_workers, len(stocks))),
+        max_workers=effective_workers,
         thread_name_prefix="run-once-stock",
     )
     future_map = {
@@ -497,10 +540,11 @@ def run_once_service(
         failed_symbol_set.add(code)
 
     LOGGER.info(
-        "Stock processing finished in %.3fs. completed=%s total=%s",
+        "Stock processing finished in %.3fs. completed=%s total=%s workers=%s",
         time.perf_counter() - stock_loop_started,
         len(results),
         len(stocks),
+        effective_workers,
     )
 
     results = sorted(results, key=lambda item: int(item.get("score", 0)), reverse=True)
@@ -509,7 +553,35 @@ def run_once_service(
         for code in dict.fromkeys(normalize_code(stock["code"]) for stock in stocks)
         if code in failed_symbol_set
     ]
-    message = "全部股票获取失败" if not results and failed_symbols else "run once completed"
+    if results and failed_symbols:
+        message = "部分股票分析成功"
+    elif not results and failed_symbols:
+        message = "全部股票获取失败"
+    else:
+        message = "run once completed"
+
+    stock_timings = [item.get("timing", {}) for item in results if isinstance(item.get("timing"), dict)]
+    timing_summary = {
+        "stock_count": len(stocks),
+        "completed_count": len(results),
+        "failed_count": len(failed_symbols),
+        "max_workers": effective_workers,
+        "partial": bool(results and failed_symbols),
+    }
+    if stock_timings:
+        stock_seconds = [float(item.get("stock_seconds", 0.0)) for item in stock_timings]
+        market_seconds = [float(item.get("market_seconds", 0.0)) for item in stock_timings]
+        fund_seconds = [float(item.get("fund_flow_seconds", 0.0)) for item in stock_timings]
+        timing_summary.update(
+            {
+                "avg_stock_seconds": round(sum(stock_seconds) / len(stock_seconds), 3),
+                "max_stock_seconds": round(max(stock_seconds), 3),
+                "avg_market_seconds": round(sum(market_seconds) / len(market_seconds), 3),
+                "max_market_seconds": round(max(market_seconds), 3),
+                "avg_fund_flow_seconds": round(sum(fund_seconds) / len(fund_seconds), 3),
+                "max_fund_flow_seconds": round(max(fund_seconds), 3),
+            }
+        )
 
     sentiment_started = time.perf_counter()
     opportunity_rank = _build_opportunity_rank(results)
@@ -561,6 +633,7 @@ def run_once_service(
     elapsed_seconds = round(time.perf_counter() - start_time, 3)
     LOGGER.info("Feishu notification result: %s", notification_result)
     LOGGER.info("Run-once service finished in %.3f seconds.", elapsed_seconds)
+    LOGGER.info("Run-once timing summary: %s", timing_summary)
 
     return {
         "ok": True,
@@ -573,6 +646,7 @@ def run_once_service(
         "elapsed_seconds": elapsed_seconds,
         "market_sentiment": market_sentiment,
         "style_distribution": style_distribution,
+        "timing": timing_summary,
         "notification": {
             "sent": bool(notification_result.get("sent")),
             "reason": str(notification_result.get("reason", "")),

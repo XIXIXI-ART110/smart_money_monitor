@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-import queue
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -182,29 +179,6 @@ def error_json_response(
     return JSONResponse(status_code=status_code, content=payload)
 
 
-def _call_route_with_timeout(func: Any, *, timeout_seconds: float, description: str) -> Any:
-    """Run one route task in a daemon thread so the API can still return JSON on timeout."""
-    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
-
-    def runner() -> None:
-        try:
-            result_queue.put((True, func()))
-        except Exception as exc:  # pragma: no cover - runtime safety
-            result_queue.put((False, exc))
-
-    thread = threading.Thread(target=runner, name=f"api-route-{description}", daemon=True)
-    thread.start()
-
-    try:
-        ok, result = result_queue.get(timeout=timeout_seconds)
-    except queue.Empty:
-        raise TimeoutError(f"{description} timed out after {timeout_seconds:.1f}s")
-
-    if not ok:
-        raise result
-    return result
-
-
 @app.get("/")
 def serve_index() -> FileResponse:
     """Serve the local frontend entry page."""
@@ -352,30 +326,15 @@ def api_run_once(request: Request) -> JSONResponse:
     route = "/api/run-once"
     _log_api_request_start(route, method=request.method)
     try:
-        result = _call_route_with_timeout(
-            lambda: run_once_service(
-                push_notification=False,
-                print_report=False,
-                enable_ai_summary=False,
-                market_timeout_seconds=2.2,
-                fund_flow_timeout_seconds=2.2,
-                ai_timeout_seconds=4.0,
-                total_timeout_seconds=7.0,
-                max_workers=2,
-            ),
-            timeout_seconds=15.0,
-            description="run-once",
-        )
-    except TimeoutError as exc:
-        LOGGER.exception("Run-once API timed out: %s", exc)
-        return error_json_response(
-            "运行分析超时，请稍后重试",
-            status_code=504,
-            route=route,
-            details={
-                "reason": "route_timeout",
-                "error": str(exc),
-            },
+        result = run_once_service(
+            push_notification=False,
+            print_report=False,
+            enable_ai_summary=False,
+            market_timeout_seconds=1.8,
+            fund_flow_timeout_seconds=1.4,
+            ai_timeout_seconds=4.0,
+            total_timeout_seconds=8.0,
+            max_workers=4,
         )
     except Exception as exc:  # pragma: no cover - runtime safety
         LOGGER.exception("Run-once API failed before response serialization: %s", exc)
@@ -414,6 +373,7 @@ def api_run_once(request: Request) -> JSONResponse:
                 "results": results,
                 "failed_symbols": failed_symbols,
                 "elapsed_seconds": result.get("elapsed_seconds"),
+                "timing": result.get("timing", {}),
                 "notification": result.get("notification", {}),
             },
         )
@@ -427,6 +387,7 @@ def api_run_once(request: Request) -> JSONResponse:
             "failed_symbols": failed_symbols,
             "opportunity_rank": result.get("opportunity_rank", []),
             "elapsed_seconds": result["elapsed_seconds"],
+            "timing": result.get("timing", {}),
             "market_sentiment": result.get("market_sentiment", {}),
             "style_distribution": result.get("style_distribution", []),
             "notification": result["notification"],
