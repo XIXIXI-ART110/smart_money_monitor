@@ -129,7 +129,15 @@ def analyze_stock(market_data: Mapping[str, Any] | None, fund_flow: Mapping[str,
     score = _STOCK_SCORE_SERVICE.score(_build_score_input(market_data, fund_flow))
     dimension_availability = _dimension_availability(market_data, fund_flow)
     unscored_dimensions = [label for label, available in dimension_availability.items() if not available]
-    data_incomplete = bool(unscored_dimensions) or bool(market_data.get("is_data_incomplete"))
+    market_unscored_dimensions = [
+        label for label in ("low_position", "volume_change", "trend_strength")
+        if not dimension_availability[label]
+    ]
+    optional_unscored_dimensions = [
+        label for label in unscored_dimensions
+        if label not in set(market_unscored_dimensions)
+    ]
+    data_incomplete = bool(market_unscored_dimensions) or bool(market_data.get("is_data_incomplete"))
 
     if pct_change is not None and pct_change > 3:
         signal.append("今日涨幅较强")
@@ -159,6 +167,10 @@ def analyze_stock(market_data: Mapping[str, Any] | None, fund_flow: Mapping[str,
         conclusion = "数据不完整，部分评分维度暂不可用"
         if "数据不完整" not in risk:
             risk.append("数据不完整")
+    elif optional_unscored_dimensions == ["fund_support"]:
+        conclusion = f"{conclusion}；资金流缺失，资金维度暂不可用"
+        if "资金流缺失" not in risk:
+            risk.append("资金流缺失")
 
     summary = [conclusion]
     if market_data.get("used_previous_trading_day"):
@@ -182,6 +194,8 @@ def analyze_stock(market_data: Mapping[str, Any] | None, fund_flow: Mapping[str,
         },
         "data_incomplete": data_incomplete,
         "unscored_dimensions": unscored_dimensions,
+        "market_unscored_dimensions": market_unscored_dimensions,
+        "optional_unscored_dimensions": optional_unscored_dimensions,
         "dimension_scores": {
             "low_position": (score.get("sub_scores") or {}).get("low") if dimension_availability["low_position"] else None,
             "volume_change": (score.get("sub_scores") or {}).get("volume") if dimension_availability["volume_change"] else None,
