@@ -70,22 +70,89 @@ app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
 
-def success_response(message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+def _response_items(data: dict[str, Any]) -> list[Any]:
+    if isinstance(data.get("items"), list):
+        return list(data["items"])
+
+    for key in ("results", "stocks", "etfs", "indexes", "options", "indices", "history", "reports", "etf_results"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return list(value)
+
+    for key in ("item", "index", "etf", "stats", "report"):
+        value = data.get(key)
+        if value:
+            return [value]
+    return []
+
+
+def _response_errors(message: str, data: dict[str, Any], ok: bool) -> list[Any]:
+    if isinstance(data.get("errors"), list):
+        return list(data["errors"])
+
+    errors: list[Any] = []
+    failed_symbols = data.get("failed_symbols")
+    if isinstance(failed_symbols, list) and failed_symbols:
+        errors.append(
+            {
+                "type": "failed_symbols",
+                "message": f"失败股票: {', '.join(str(symbol) for symbol in failed_symbols)}",
+                "symbols": failed_symbols,
+            }
+        )
+    if not ok and message:
+        errors.append(message)
+    return errors
+
+
+def _normalize_response_data(message: str, data: dict[str, Any] | None, ok: bool) -> dict[str, Any]:
+    payload = dict(data or {})
+    payload["items"] = _response_items(payload)
+    payload["errors"] = _response_errors(message, payload, ok)
+    return payload
+
+
+def _log_api_request_start(route: str, **context: Any) -> None:
+    LOGGER.info("API request start: route=%s context=%s", route, context or {})
+
+
+def _log_api_response(route: str, payload: dict[str, Any]) -> None:
+    data = payload.get("data", {}) if isinstance(payload, dict) else {}
+    items = data.get("items", []) if isinstance(data, dict) else []
+    errors = data.get("errors", []) if isinstance(data, dict) else []
+    keys = sorted(data.keys()) if isinstance(data, dict) else []
+    LOGGER.info(
+        "API response summary: route=%s ok=%s item_count=%s error_count=%s data_keys=%s",
+        route,
+        payload.get("ok") if isinstance(payload, dict) else None,
+        len(items) if isinstance(items, list) else 0,
+        len(errors) if isinstance(errors, list) else 0,
+        keys,
+    )
+
+
+def success_response(message: str, data: dict[str, Any] | None = None, *, route: str | None = None) -> dict[str, Any]:
     """Build a consistent success response payload."""
-    return {
+    payload = {
         "ok": True,
         "message": message,
-        "data": data or {},
+        "data": _normalize_response_data(message, data, True),
     }
+    if route:
+        _log_api_response(route, payload)
+    return payload
 
 
-def error_response(message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+def error_response(message: str, data: dict[str, Any] | None = None, *, route: str | None = None) -> dict[str, Any]:
     """Build a consistent error response payload."""
-    return {
+    payload = {
         "ok": False,
         "message": message,
-        "data": data or {},
+        "data": _normalize_response_data(message, data, False),
     }
+    if route:
+        _log_api_response(route, payload)
+    return payload
 
 
 @app.get("/")
@@ -96,17 +163,20 @@ def serve_index() -> FileResponse:
 
 @app.get("/low")
 def get_low_opportunities():
-    return get_low_opportunity_pool()
+    _log_api_request_start("/low")
+    return success_response("low opportunity pool loaded", {"items": get_low_opportunity_pool()}, route="/low")
 
 
 @app.get("/recommend")
 def get_recommend():
-    return get_auto_recommendation()
+    _log_api_request_start("/recommend")
+    return success_response("opportunity recommendation loaded", {"item": get_auto_recommendation()}, route="/recommend")
 
 
 @app.get("/api/health")
 def health_check() -> dict[str, Any]:
     """Return a simple health payload."""
+    _log_api_request_start("/api/health")
     return success_response(
         "service is running",
         {
@@ -114,24 +184,28 @@ def health_check() -> dict[str, Any]:
             "etf_watchlist_exists": ETF_WATCHLIST_PATH.exists(),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         },
+        route="/api/health",
     )
 
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
     """Return a safe subset of current runtime config."""
+    _log_api_request_start("/api/config")
     return success_response(
         "config loaded",
         {
             **get_public_runtime_config(),
             "env_exists": ENV_PATH.exists(),
         },
+        route="/api/config",
     )
 
 
 @app.post("/api/config")
 def update_config(payload: ConfigUpdatePayload) -> dict[str, Any]:
     """Persist basic config values into the local .env file."""
+    _log_api_request_start("/api/config", method="POST")
     updates = {
         "OPENAI_API_KEY": payload.openai_api_key,
         "OPENAI_MODEL": payload.openai_model,
@@ -139,74 +213,86 @@ def update_config(payload: ConfigUpdatePayload) -> dict[str, Any]:
         "DEFAULT_SCHEDULE_TIME": payload.default_schedule_time,
     }
     result = update_env_config({key: value for key, value in updates.items() if value is not None})
-    return success_response("config saved", result)
+    return success_response("config saved", result, route="/api/config")
 
 
 @app.get("/api/stocks")
 def get_stocks() -> dict[str, Any]:
     """Return the current watchlist."""
+    _log_api_request_start("/api/stocks")
     stocks = load_watchlist()
-    return success_response("stocks loaded", {"stocks": stocks})
+    LOGGER.info("Watchlist source result count: %s", len(stocks))
+    return success_response("stocks loaded", {"stocks": stocks}, route="/api/stocks")
 
 
 @app.get("/api/search-stocks")
 def search_stock_options(q: str = "") -> dict[str, Any]:
     """Search A-share stocks by code or name for the watchlist selector."""
+    _log_api_request_start("/api/search-stocks", q=q)
     items = search_stocks(q)
-    return success_response("stocks searched", {"items": items})
+    LOGGER.info("Stock search result count: %s", len(items))
+    return success_response("stocks searched", {"items": items}, route="/api/search-stocks")
 
 
 @app.post("/api/stocks")
 def create_stock(payload: StockPayload) -> dict[str, Any]:
     """Add one stock to the watchlist."""
+    _log_api_request_start("/api/stocks", method="POST", code=payload.code)
     existing_codes = {item["code"] for item in load_watchlist()}
     stocks = add_stock(payload.code, payload.name)
     normalized_code = str(payload.code).strip().zfill(6)
     message = "stock added"
     if normalized_code in existing_codes:
         message = "stock already exists"
-    return success_response(message, {"stocks": stocks})
+    LOGGER.info("Watchlist source result count: %s", len(stocks))
+    return success_response(message, {"stocks": stocks}, route="/api/stocks")
 
 
 @app.get("/api/etfs")
 def get_etfs() -> dict[str, Any]:
     """Return the current ETF watchlist."""
+    _log_api_request_start("/api/etfs")
     etfs = load_etf_watchlist()
-    return success_response("etfs loaded", {"etfs": etfs})
+    LOGGER.info("ETF watchlist source result count: %s", len(etfs))
+    return success_response("etfs loaded", {"etfs": etfs}, route="/api/etfs")
 
 
 @app.post("/api/etfs")
 def create_etf(payload: StockPayload) -> dict[str, Any]:
     """Add one ETF to the watchlist."""
+    _log_api_request_start("/api/etfs", method="POST", code=payload.code)
     existing_codes = {item["code"] for item in load_etf_watchlist()}
     etfs = add_etf(payload.code, payload.name)
     normalized_code = str(payload.code).strip().zfill(6)
     message = "etf added"
     if normalized_code in existing_codes:
         message = "etf already exists"
-    return success_response(message, {"etfs": etfs})
+    LOGGER.info("ETF watchlist source result count: %s", len(etfs))
+    return success_response(message, {"etfs": etfs}, route="/api/etfs")
 
 
 @app.delete("/api/stocks/{code}")
 def remove_stock(code: str) -> dict[str, Any]:
     """Delete one stock from the watchlist."""
+    _log_api_request_start("/api/stocks/{code}", method="DELETE", code=code)
     existing_codes = {item["code"] for item in load_watchlist()}
     normalized_code = str(code).strip().zfill(6)
     stocks = delete_stock(normalized_code)
     if normalized_code not in existing_codes:
-        return success_response("stock not found, nothing deleted", {"stocks": stocks})
-    return success_response("stock deleted", {"stocks": stocks})
+        return success_response("stock not found, nothing deleted", {"stocks": stocks}, route="/api/stocks/{code}")
+    return success_response("stock deleted", {"stocks": stocks}, route="/api/stocks/{code}")
 
 
 @app.delete("/api/etfs/{code}")
 def remove_etf(code: str) -> dict[str, Any]:
     """Delete one ETF from the watchlist."""
+    _log_api_request_start("/api/etfs/{code}", method="DELETE", code=code)
     existing_codes = {item["code"] for item in load_etf_watchlist()}
     normalized_code = str(code).strip().zfill(6)
     etfs = delete_etf(normalized_code)
     if normalized_code not in existing_codes:
-        return success_response("etf not found, nothing deleted", {"etfs": etfs})
-    return success_response("etf deleted", {"etfs": etfs})
+        return success_response("etf not found, nothing deleted", {"etfs": etfs}, route="/api/etfs/{code}")
+    return success_response("etf deleted", {"etfs": etfs}, route="/api/etfs/{code}")
 
 
 @app.get("/api/run-once")

@@ -34,6 +34,44 @@ def _first_float(*values: Any, default: float = 0.0) -> float:
     return default
 
 
+def _nullable_float(*values: Any) -> float | None:
+    """Return the first present numeric value, or None when absent."""
+    for value in values:
+        if value is None or value == "":
+            continue
+        return safe_float(value, default=0.0)
+    return None
+
+
+def _has_number(value: Any) -> bool:
+    return value not in (None, "")
+
+
+def _dimension_availability(market_data: Mapping[str, Any], fund_flow: Mapping[str, Any]) -> dict[str, bool]:
+    """Track which scoring dimensions have enough input to be considered reliable."""
+    price = _nullable_float(
+        market_data.get("price"),
+        market_data.get("latest_price"),
+        market_data.get("close"),
+    )
+    low_dimension_ready = price is not None and (
+        (_has_number(market_data.get("high_60d")) and _has_number(market_data.get("low_60d")))
+        or (_has_number(market_data.get("high_120d")) and _has_number(market_data.get("low_120d")))
+        or (_has_number(market_data.get("high")) and _has_number(market_data.get("low")))
+    )
+    volume_dimension_ready = _has_number(market_data.get("volume_ratio")) or _has_number(market_data.get("turnover_rate"))
+    trend_dimension_ready = price is not None and any(
+        _has_number(market_data.get(field)) for field in ("ma5", "ma10", "ma20", "ma60")
+    )
+    capital_dimension_ready = _has_number(fund_flow.get("main_net_inflow"))
+    return {
+        "low_position": low_dimension_ready,
+        "volume_change": volume_dimension_ready,
+        "trend_strength": trend_dimension_ready,
+        "fund_support": capital_dimension_ready,
+    }
+
+
 def _build_score_input(market_data: Mapping[str, Any], fund_flow: Mapping[str, Any] | None) -> dict[str, Any]:
     """Adapt current market/fund fields into the StockScoreService input shape."""
     price = _first_number(
@@ -84,23 +122,26 @@ def analyze_stock(market_data: Mapping[str, Any] | None, fund_flow: Mapping[str,
     signal: list[str] = []
     risk: list[str] = []
 
-    pct_change = _first_float(market_data.get("pct_change"), market_data.get("change_pct"), default=0.0)
-    turnover = safe_float(market_data.get("turnover"), default=0.0)
-    main_net_inflow = safe_float(fund_flow.get("main_net_inflow"), default=0.0)
+    pct_change = _nullable_float(market_data.get("pct_change"), market_data.get("change_pct"))
+    turnover = _nullable_float(market_data.get("turnover"))
+    main_net_inflow = _nullable_float(fund_flow.get("main_net_inflow"))
 
     score = _STOCK_SCORE_SERVICE.score(_build_score_input(market_data, fund_flow))
+    dimension_availability = _dimension_availability(market_data, fund_flow)
+    unscored_dimensions = [label for label, available in dimension_availability.items() if not available]
+    data_incomplete = bool(unscored_dimensions) or bool(market_data.get("is_data_incomplete"))
 
-    if pct_change > 3:
+    if pct_change is not None and pct_change > 3:
         signal.append("今日涨幅较强")
-    elif pct_change < -3:
+    elif pct_change is not None and pct_change < -3:
         risk.append("今日跌幅较大")
 
-    if turnover >= ACTIVE_TURNOVER_THRESHOLD:
+    if turnover is not None and turnover >= ACTIVE_TURNOVER_THRESHOLD:
         signal.append("成交活跃")
 
-    if main_net_inflow > 0:
+    if main_net_inflow is not None and main_net_inflow > 0:
         signal.append("主力资金净流入")
-    elif main_net_inflow < 0:
+    elif main_net_inflow is not None and main_net_inflow < 0:
         risk.append("主力资金净流出")
 
     for tag in score.get("tags", []):
@@ -113,7 +154,15 @@ def analyze_stock(market_data: Mapping[str, Any] | None, fund_flow: Mapping[str,
         elif tag_text not in signal:
             signal.append(tag_text)
 
-    summary = [score.get("conclusion", "当前信号一般，暂时不算理想机会")]
+    conclusion = str(score.get("conclusion", "") or "当前信号一般，暂时不算理想机会")
+    if data_incomplete:
+        conclusion = "数据不完整，部分评分维度暂不可用"
+        if "数据不完整" not in risk:
+            risk.append("数据不完整")
+
+    summary = [conclusion]
+    if market_data.get("used_previous_trading_day"):
+        summary.append(str(market_data.get("data_notice") or "当前为非交易时段，展示最近交易日数据"))
     summary.extend(signal)
     summary.extend(risk)
 
@@ -125,14 +174,19 @@ def analyze_stock(market_data: Mapping[str, Any] | None, fund_flow: Mapping[str,
         "total_score": score.get("total_score", 0),
         "level": score.get("level", "D"),
         "sub_scores": score.get("sub_scores", {}),
-        "conclusion": score.get("conclusion", ""),
+        "conclusion": conclusion,
         "tags": score.get("tags", []),
-        "details": score.get("details", {}),
+        "details": {
+            **(score.get("details", {}) or {}),
+            "availability": dimension_availability,
+        },
+        "data_incomplete": data_incomplete,
+        "unscored_dimensions": unscored_dimensions,
         "dimension_scores": {
-            "low_position": (score.get("sub_scores") or {}).get("low", 0),
-            "volume_change": (score.get("sub_scores") or {}).get("volume", 0),
-            "trend_strength": (score.get("sub_scores") or {}).get("trend", 0),
-            "fund_support": (score.get("sub_scores") or {}).get("capital", 0),
+            "low_position": (score.get("sub_scores") or {}).get("low") if dimension_availability["low_position"] else None,
+            "volume_change": (score.get("sub_scores") or {}).get("volume") if dimension_availability["volume_change"] else None,
+            "trend_strength": (score.get("sub_scores") or {}).get("trend") if dimension_availability["trend_strength"] else None,
+            "fund_support": (score.get("sub_scores") or {}).get("capital") if dimension_availability["fund_support"] else None,
         },
     }
 

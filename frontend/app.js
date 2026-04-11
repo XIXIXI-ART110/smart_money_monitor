@@ -216,6 +216,23 @@ const amt = (value) => {
   return parsed.toFixed(2);
 };
 
+const hasNumericValue = (value) => value !== null && value !== undefined && value !== "" && !Number.isNaN(Number(value));
+
+const stockPriceText = (value) => {
+  if (!hasNumericValue(value) || Number(value) <= 0) return "--";
+  return num(value);
+};
+
+const stockPercentText = (value) => {
+  if (!hasNumericValue(value)) return "--";
+  return pct(value);
+};
+
+const stockAmountText = (value) => {
+  if (!hasNumericValue(value)) return "--";
+  return amt(value);
+};
+
 const tone = (value) => {
   const parsed = Number(value);
   if (Number.isNaN(parsed)) return "flat";
@@ -362,6 +379,8 @@ function renderStockResults(results) {
     const fundTone = tone(fund.main_net_inflow);
     const signalTags = Array.isArray(analysis.signal) ? analysis.signal : [];
     const riskTags = Array.isArray(analysis.risk) ? analysis.risk : [];
+    const marketNotice = String(market.data_notice || "").trim();
+    const isDataIncomplete = Boolean(analysis.data_incomplete || market.is_data_incomplete || isError);
     const dimensionScores = analysis.dimension_scores || {};
     const dimensionItems = [
       ["低位", dimensionScores.low_position],
@@ -372,6 +391,7 @@ function renderStockResults(results) {
     const conclusion = analysis.conclusion || item.ai_summary || item.error || "暂无结论";
     const tags = [
       ...(isError ? [`<span class="stock-tag risk">${esc(item.error || item.status || "异常")}</span>`] : []),
+      ...(isDataIncomplete ? [`<span class="stock-tag warning">数据不完整</span>`] : []),
       ...signalTags.map((tag) => `<span class="stock-tag signal">${esc(tag)}</span>`),
       ...riskTags.map((tag) => `<span class="stock-tag risk">${esc(tag)}</span>`)
     ].join("") || `<span class="stock-tag neutral">暂无信号</span>`;
@@ -389,23 +409,24 @@ function renderStockResults(results) {
           </div>
         </div>
         <div class="stock-quote-row">
-          <strong class="stock-price ${changeTone}">${num(market.latest_price)}</strong>
-          <span class="stock-change ${changeTone}">${pct(market.pct_change)}</span>
+          <strong class="stock-price ${changeTone}">${stockPriceText(market.latest_price)}</strong>
+          <span class="stock-change ${changeTone}">${stockPercentText(market.pct_change)}</span>
         </div>
+        ${marketNotice ? `<div class="stock-note">${esc(marketNotice)}</div>` : ""}
         <div class="stock-data-line">
           <span>成交额</span>
-          <strong>${amt(market.turnover)}</strong>
+          <strong>${stockAmountText(market.turnover)}</strong>
         </div>
         <div class="stock-data-line">
           <span>主力资金</span>
-          <strong class="${fundTone}">${amt(fund.main_net_inflow)}</strong>
+          <strong class="${fundTone}">${stockAmountText(fund.main_net_inflow)}</strong>
         </div>
         <div class="stock-conclusion">${esc(conclusion)}</div>
         <div class="stock-dimension-row">
           ${dimensionItems.map(([label, value]) => `
             <span class="stock-dimension">
               <b>${esc(label)}</b>
-              <em>${esc(value ?? "--")}</em>
+              <em>${hasNumericValue(value) ? esc(value) : "--"}</em>
             </span>
           `).join("")}
         </div>

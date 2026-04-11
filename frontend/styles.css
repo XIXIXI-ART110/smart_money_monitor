@@ -93,6 +93,7 @@ input:focus{border-color:rgba(95,220,255,.55);box-shadow:0 0 0 3px rgba(95,220,2
 .stock-quote-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:2px 0 4px}
 .stock-price{font-size:38px;line-height:1;font-weight:900;letter-spacing:-.03em}
 .stock-change{font-size:19px;font-weight:900}
+.stock-note{margin-top:-2px;padding:7px 10px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);color:#b8c8e8;font-size:12px;line-height:1.45}
 .stock-data-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-top:1px solid rgba(255,255,255,.06)}
 .stock-data-line span{color:var(--muted);font-size:12px}
 .stock-data-line strong{font-size:16px}
@@ -105,6 +106,7 @@ input:focus{border-color:rgba(95,220,255,.55);box-shadow:0 0 0 3px rgba(95,220,2
 .stock-tag{display:inline-flex;align-items:center;min-height:26px;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:800;border:1px solid rgba(255,255,255,.08)}
 .stock-tag.signal{color:#d8e0ff;background:rgba(109,140,255,.12);border-color:rgba(109,140,255,.24)}
 .stock-tag.risk{color:#ffb7c0;background:rgba(255,107,120,.12);border-color:rgba(255,107,120,.24)}
+.stock-tag.warning{color:#ffe0a8;background:rgba(255,178,64,.12);border-color:rgba(255,178,64,.26)}
 .stock-tag.neutral{color:var(--muted);background:rgba(255,255,255,.05)}
 .kv,.detail-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
 .kv{margin-bottom:14px}
