@@ -351,6 +351,9 @@ function normalizeRunOncePayload(payload) {
     ...rawData,
     results: firstArrayValue(rawData.results, payload?.results, rawData.items, payload?.items),
     failed_symbols: firstArrayValue(rawData.failed_symbols, payload?.failed_symbols),
+    failed_details: rawData.failed_details && typeof rawData.failed_details === "object"
+      ? rawData.failed_details
+      : (payload?.failed_details && typeof payload.failed_details === "object" ? payload.failed_details : {}),
     opportunity_rank: firstArrayValue(rawData.opportunity_rank, payload?.opportunity_rank),
     style_distribution: firstArrayValue(rawData.style_distribution, payload?.style_distribution),
     market_sentiment: rawData.market_sentiment || payload?.market_sentiment || {},
@@ -363,14 +366,38 @@ function normalizeRunOncePayload(payload) {
   };
 }
 
-function renderStockResults(results) {
+function renderStockResults(results, failedDetails = {}) {
   if (!results.length) {
     dom.stockResults.innerHTML = `<div class="empty">本次没有返回个股结果。</div>`;
     dom.heatmap.innerHTML = `<div class="empty">本次没有热力图数据。</div>`;
     return;
   }
 
-  dom.stockResults.innerHTML = results.map((item) => {
+  const failedEntries = Object.entries(failedDetails || {});
+  const failureSummaryCard = failedEntries.length ? `
+    <article class="card stock-card error">
+      <div class="stock-card-head">
+        <div class="stock-title">
+          <h3>失败摘要</h3>
+          <span>${esc(`${results.length} 只成功 / ${failedEntries.length} 只失败`)}</span>
+        </div>
+        <div class="stock-score">
+          <span>失败数</span>
+          <strong>${esc(failedEntries.length)}</strong>
+        </div>
+      </div>
+      <div class="stock-conclusion">本次已返回成功结果；失败股票保留在失败明细里，便于继续排查。</div>
+      <div class="stock-tag-row">
+        ${failedEntries.map(([code, detail]) => {
+          const stage = String(detail?.stage || "unknown").trim();
+          const reason = String(detail?.reason || "未知原因").trim();
+          return `<span class="stock-tag risk">${esc(`${code} · ${stage} · ${reason}`)}</span>`;
+        }).join("")}
+      </div>
+    </article>
+  ` : "";
+
+  dom.stockResults.innerHTML = `${failureSummaryCard}${results.map((item) => {
     const analysis = item.analysis || {};
     const market = item.market_data || {};
     const fund = item.fund_flow || {};
@@ -433,7 +460,7 @@ function renderStockResults(results) {
         <div class="stock-tag-row">${tags}</div>
       </article>
     `;
-  }).join("");
+  }).join("")}`;
 
   renderHeatmap(results);
 }
@@ -1360,9 +1387,10 @@ async function runStockAnalysis() {
   try {
     const payload = normalizeRunOncePayload(await fetchJson(api.runStocks, { method: "POST", headers: { "Content-Type": "application/json" } }));
     state.stockPayload = payload;
-    renderStockResults(payload.data.results);
+    renderStockResults(payload.data.results, payload.data.failed_details);
     renderHome();
-    setChip(dom.stockRunStatus, "分析完成", "good");
+    const failedCount = Object.keys(payload.data?.failed_details || {}).length;
+    setChip(dom.stockRunStatus, failedCount ? `部分成功：${payload.data.results.length} 成功 / ${failedCount} 失败` : "分析完成", failedCount ? "blue" : "good");
     setChip(dom.stockElapsed, `耗时：${num(payload.data?.elapsed_seconds ?? 0, 3)}秒`);
     const notification = payload.data?.notification || {};
     setChip(dom.stockNotify, notification.sent ? "飞书：已推送" : `飞书：${notification.reason || "未推送"}`, notification.sent ? "good" : "bad");

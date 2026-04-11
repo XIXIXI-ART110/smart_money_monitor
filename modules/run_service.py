@@ -654,6 +654,7 @@ def run_once_service(
             "report_content": "",
             "results": [],
             "failed_symbols": [],
+            "failed_details": {},
             "opportunity_rank": [],
             "elapsed_seconds": round(time.perf_counter() - start_time, 3),
             "notification": {
@@ -829,7 +830,7 @@ def run_once_service(
     LOGGER.info("Run-once timing summary: %s", timing_summary)
 
     return {
-        "ok": True,
+        "ok": bool(results),
         "message": message,
         "report_path": _to_relative_path(report_path),
         "report_content": report_content,

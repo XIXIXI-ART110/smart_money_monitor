@@ -24,7 +24,7 @@ from modules.opportunity_service import (
 )
 from modules.opportunity_review import calculate_hit_stats, load_opportunity_history, review_opportunities
 from modules.report_service import get_latest_report, get_report_by_filename, list_reports
-from modules.run_service import process_stock
+from modules.run_service import process_stock, run_once_service
 from modules.stock_search_service import search_stocks
 from modules.watchlist_service import add_stock, delete_stock, load_watchlist
 
@@ -67,12 +67,6 @@ BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 app.mount("/frontend", StaticFiles(directory=FRONTEND_DIR), name="frontend")
-
-DEFAULT_SINGLE_RUN_ONCE_STOCK = {
-    "code": "002594",
-    "name": "比亚迪",
-}
-
 
 
 def _response_items(data: dict[str, Any]) -> list[Any]:
@@ -198,8 +192,8 @@ def _single_stock_error_response(route: str, error_detail: dict[str, Any], *, st
     return JSONResponse(status_code=status_code, content=payload)
 
 
-def _resolve_single_run_once_stock(request: Request) -> dict[str, str]:
-    """Resolve the one stock used by /api/run-once during the single-stock rollout."""
+def _resolve_single_run_once_stock(request: Request) -> dict[str, str] | None:
+    """Resolve an optional single-stock debug target for /api/run-once."""
     target_code = request.query_params.get("code", "").strip()
     target_name = request.query_params.get("name", "").strip()
     if target_code:
@@ -208,7 +202,7 @@ def _resolve_single_run_once_stock(request: Request) -> dict[str, str]:
             "code": normalized_code,
             "name": target_name or normalized_code,
         }
-    return dict(DEFAULT_SINGLE_RUN_ONCE_STOCK)
+    return None
 
 
 def _build_single_stock_error_detail(stock: dict[str, str], result: dict[str, Any] | None) -> dict[str, Any]:
@@ -390,88 +384,164 @@ def remove_etf(code: str) -> dict[str, Any]:
 @app.get("/api/run-once")
 @app.post("/api/run-once")
 def api_run_once(request: Request) -> JSONResponse:
-    """Execute the current single-stock monitoring cycle and return structured results."""
+    """Run one explicit debug stock or the full watchlist when no code is provided."""
     route = "/api/run-once"
     _log_api_request_start(route, method=request.method)
     stock = _resolve_single_run_once_stock(request)
-    LOGGER.info("Run-once API locked to single stock: %s %s", stock["code"], stock["name"])
+    if stock is not None:
+        LOGGER.info("Run-once API using single-stock debug mode: %s %s", stock["code"], stock["name"])
+        try:
+            result = process_stock(
+                stock,
+                None,
+                enable_ai_summary=False,
+                market_timeout_seconds=16.0,
+                fund_flow_timeout_seconds=3.0,
+            )
+        except Exception as exc:  # pragma: no cover - runtime safety
+            LOGGER.exception("Run-once API failed before response serialization: %s", exc)
+            return _single_stock_error_response(
+                route,
+                {
+                    "symbol": stock["code"],
+                    "stage": "assemble",
+                    "reason": str(exc),
+                    "data_source": "",
+                    "market_snapshot": {
+                        "latest_price": None,
+                        "pct_change": None,
+                        "turnover": None,
+                    },
+                },
+                status_code=500,
+            )
+
+        if not isinstance(result, dict):
+            LOGGER.error("Run-once API returned non-dict result: %r", result)
+            return _single_stock_error_response(
+                route,
+                {
+                    "symbol": stock["code"],
+                    "stage": "assemble",
+                    "reason": f"invalid_result:{type(result).__name__}",
+                    "data_source": "",
+                    "market_snapshot": {
+                        "latest_price": None,
+                        "pct_change": None,
+                        "turnover": None,
+                    },
+                },
+                status_code=500,
+            )
+
+        if result.get("status") != "ok":
+            return _single_stock_error_response(
+                route,
+                _build_single_stock_error_detail(stock, result),
+                status_code=502,
+            )
+
+        payload = success_response(
+            "single stock analysis completed",
+            {
+                "results": [result],
+                "failed_symbols": [],
+                "failed_details": {},
+                "opportunity_rank": [],
+                "elapsed_seconds": (result.get("timing", {}) or {}).get("stock_seconds", 0),
+                "timing": {
+                    "stock_count": 1,
+                    "completed_count": 1,
+                    "failed_count": 0,
+                    "partial": False,
+                    **(result.get("timing", {}) or {}),
+                },
+                "market_sentiment": {},
+                "style_distribution": [],
+                "notification": {
+                    "sent": False,
+                    "reason": "notification_disabled",
+                },
+            },
+            route=route,
+        )
+        payload["failed_details"] = {}
+        return JSONResponse(status_code=200, content=payload)
+
+    LOGGER.info("Run-once API using full watchlist mode.")
     try:
-        result = process_stock(
-            stock,
-            None,
+        service_result = run_once_service(
+            push_notification=False,
+            print_report=False,
             enable_ai_summary=False,
             market_timeout_seconds=16.0,
             fund_flow_timeout_seconds=3.0,
+            total_timeout_seconds=60.0,
+            # AKShare recent-day fetch is more stable in server mode when stocks are processed serially.
+            max_workers=1,
         )
     except Exception as exc:  # pragma: no cover - runtime safety
-        LOGGER.exception("Run-once API failed before response serialization: %s", exc)
-        return _single_stock_error_response(
-            route,
-            {
-                "symbol": stock["code"],
-                "stage": "assemble",
+        LOGGER.exception("Run-once API failed before multi-stock response serialization: %s", exc)
+        return error_json_response(
+            "run once failed",
+            status_code=500,
+            route=route,
+            details={
                 "reason": str(exc),
-                "data_source": "",
-                "market_snapshot": {
-                    "latest_price": None,
-                    "pct_change": None,
-                    "turnover": None,
-                },
+                "failed_details": {},
+                "failed_symbols": [],
             },
+        )
+
+    if not isinstance(service_result, dict):
+        LOGGER.error("Run-once service returned non-dict result: %r", service_result)
+        return error_json_response(
+            "run once failed",
             status_code=500,
+            route=route,
+            details={
+                "reason": f"invalid_result:{type(service_result).__name__}",
+                "failed_details": {},
+                "failed_symbols": [],
+            },
         )
 
-    if not isinstance(result, dict):
-        LOGGER.error("Run-once API returned non-dict result: %r", result)
-        return _single_stock_error_response(
-            route,
-            {
-                "symbol": stock["code"],
-                "stage": "assemble",
-                "reason": f"invalid_result:{type(result).__name__}",
-                "data_source": "",
-                "market_snapshot": {
-                    "latest_price": None,
-                    "pct_change": None,
-                    "turnover": None,
-                },
-            },
-            status_code=500,
+    data = {
+        "results": list(service_result.get("results", []) or []),
+        "failed_symbols": list(service_result.get("failed_symbols", []) or []),
+        "failed_details": dict(service_result.get("failed_details", {}) or {}),
+        "opportunity_rank": list(service_result.get("opportunity_rank", []) or []),
+        "elapsed_seconds": service_result.get("elapsed_seconds", 0),
+        "timing": dict(service_result.get("timing", {}) or {}),
+        "market_sentiment": dict(service_result.get("market_sentiment", {}) or {}),
+        "style_distribution": list(service_result.get("style_distribution", []) or []),
+        "notification": dict(service_result.get("notification", {}) or {}),
+        "report_path": service_result.get("report_path"),
+        "report_content": service_result.get("report_content", ""),
+    }
+
+    if data["results"]:
+        return JSONResponse(
+            status_code=200,
+            content=success_response(
+                str(service_result.get("message") or "run once completed"),
+                data,
+                route=route,
+            ),
         )
 
-    if result.get("status") != "ok":
-        return _single_stock_error_response(
-            route,
-            _build_single_stock_error_detail(stock, result),
-            status_code=502,
-        )
-
-    payload = success_response(
-        "single stock analysis completed",
-        {
-            "results": [result],
-            "failed_symbols": [],
-            "failed_details": {},
-            "opportunity_rank": [],
-            "elapsed_seconds": (result.get("timing", {}) or {}).get("stock_seconds", 0),
-            "timing": {
-                "stock_count": 1,
-                "completed_count": 1,
-                "failed_count": 0,
-                "partial": False,
-                **(result.get("timing", {}) or {}),
-            },
-            "market_sentiment": {},
-            "style_distribution": [],
-            "notification": {
-                "sent": False,
-                "reason": "notification_disabled",
-            },
-        },
+    return error_json_response(
+        str(service_result.get("message") or "run once failed"),
+        status_code=502,
         route=route,
+        details={
+            "reason": "no_usable_results",
+            "failed_symbols": data["failed_symbols"],
+            "failed_details": data["failed_details"],
+            "elapsed_seconds": data["elapsed_seconds"],
+            "timing": data["timing"],
+        },
     )
-    payload["failed_details"] = {}
-    return JSONResponse(status_code=200, content=payload)
 
 
 @app.post("/api/run-etf-once")
