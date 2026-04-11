@@ -422,6 +422,7 @@ def fetch_akshare_display_data(code: str, name: str | None = None) -> dict[str, 
     ]
 
     for data_source, fetcher, description, timeout_seconds in quote_attempts:
+        LOGGER.info("trying market source: %s code=%s stage=realtime_quote", data_source, normalized_code)
         try:
             dataframe = _call_akshare_with_retry(
                 fetcher,
@@ -436,12 +437,22 @@ def fetch_akshare_display_data(code: str, name: str | None = None) -> dict[str, 
                 data_source,
             )
             if normalized:
+                LOGGER.info(
+                    "market source success: %s code=%s latest_price=%s pct_change=%s turnover=%s",
+                    data_source,
+                    normalized_code,
+                    normalized.get("latest_price"),
+                    normalized.get("pct_change"),
+                    normalized.get("turnover"),
+                )
                 return normalized
         except TimeoutError as exc:  # pragma: no cover - runtime safety
+            LOGGER.warning("market source fail: %s code=%s error=%s", data_source, normalized_code, exc)
             LOGGER.warning("AKShare %s display quote timed out for %s: %s", data_source, normalized_code, exc)
             if data_source == "akshare_xq":
                 break
         except Exception as exc:  # pragma: no cover - runtime safety
+            LOGGER.warning("market source fail: %s code=%s error=%s", data_source, normalized_code, exc)
             LOGGER.warning("AKShare %s display quote failed for %s: %s", data_source, normalized_code, exc)
 
     return {}
@@ -497,6 +508,7 @@ def fetch_akshare_hist_data(code: str, name: str | None = None) -> dict[str, Any
     ]
 
     for data_source, fetcher, description, timeout_seconds in quote_attempts:
+        LOGGER.info("trying market source: %s code=%s stage=recent_trading_day", data_source, normalized_code)
         try:
             LOGGER.info(
                 "Requesting recent trading-day data for %s via %s. start_date=%s end_date=%s",
@@ -512,10 +524,12 @@ def fetch_akshare_hist_data(code: str, name: str | None = None) -> dict[str, Any
                 timeout_seconds=timeout_seconds,
             )
         except Exception as exc:  # pragma: no cover - runtime safety
+            LOGGER.warning("market source fail: %s code=%s error=%s", data_source, normalized_code, exc)
             LOGGER.warning("AKShare recent daily fallback failed for %s via %s: %s", normalized_code, data_source, exc)
             continue
 
         if not isinstance(dataframe, pd.DataFrame) or dataframe.empty:
+            LOGGER.warning("market source fail: %s code=%s error=empty_dataframe", data_source, normalized_code)
             LOGGER.warning("AKShare recent daily data is empty for %s via %s.", normalized_code, data_source)
             continue
 
@@ -640,8 +654,17 @@ def fetch_akshare_hist_data(code: str, name: str | None = None) -> dict[str, Any
                 normalized_result.get("timestamp"),
                 normalized_result.get("missing_fields"),
             )
+            LOGGER.info(
+                "market source success: %s code=%s latest_price=%s pct_change=%s turnover=%s",
+                data_source,
+                normalized_code,
+                normalized_result.get("latest_price"),
+                normalized_result.get("pct_change"),
+                normalized_result.get("turnover"),
+            )
             return normalized_result
         except Exception as exc:  # pragma: no cover - runtime safety
+            LOGGER.warning("market source fail: %s code=%s error=%s", data_source, normalized_code, exc)
             LOGGER.warning("Failed to normalize AKShare recent daily data for %s via %s: %s", normalized_code, data_source, exc)
 
     return {}
@@ -659,6 +682,7 @@ def fetch_latest_daily_data(code: str, name: str | None = None) -> dict[str, Any
     start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
 
     try:
+        LOGGER.info("trying market source: tushare_daily code=%s stage=recent_trading_day", normalized_code)
         dataframe = _call_tushare_with_retry(
             lambda: pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date),
             description=f"daily {ts_code}",
@@ -666,6 +690,7 @@ def fetch_latest_daily_data(code: str, name: str | None = None) -> dict[str, Any
             timeout_seconds=4.0,
         )
     except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.warning("market source fail: tushare_daily code=%s error=%s", normalized_code, exc)
         LOGGER.warning("Tushare daily fallback failed for %s: %s", ts_code, exc)
         return {}
 
@@ -683,7 +708,7 @@ def fetch_latest_daily_data(code: str, name: str | None = None) -> dict[str, Any
         if close is None:
             return {}
 
-        return {
+        result = {
             "code": normalized_code,
             "name": _resolve_stock_name(pro, normalized_code, name),
             "latest_price": close,
@@ -701,7 +726,16 @@ def fetch_latest_daily_data(code: str, name: str | None = None) -> dict[str, Any
             "timestamp": str(latest_row.get("trade_date") or ""),
             "data_source": "tushare_daily",
         }
+        LOGGER.info(
+            "market source success: tushare_daily code=%s latest_price=%s pct_change=%s turnover=%s",
+            normalized_code,
+            result.get("latest_price"),
+            result.get("pct_change"),
+            result.get("turnover"),
+        )
+        return result
     except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.warning("market source fail: tushare_daily code=%s error=%s", normalized_code, exc)
         LOGGER.warning("Failed to normalize Tushare daily data for %s: %s", ts_code, exc)
         return {}
 

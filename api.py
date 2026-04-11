@@ -400,8 +400,8 @@ def api_run_once(request: Request) -> JSONResponse:
             stock,
             None,
             enable_ai_summary=False,
-            market_timeout_seconds=1.8,
-            fund_flow_timeout_seconds=1.4,
+            market_timeout_seconds=16.0,
+            fund_flow_timeout_seconds=3.0,
         )
     except Exception as exc:  # pragma: no cover - runtime safety
         LOGGER.exception("Run-once API failed before response serialization: %s", exc)

@@ -420,6 +420,35 @@ def _build_failure_detail(
     }
 
 
+def _build_analysis_mode(
+    market_data: dict[str, Any],
+    fund_flow: dict[str, Any],
+    *,
+    market_error: str = "",
+    fund_error: str = "",
+) -> tuple[str, list[str], dict[str, str]]:
+    """Classify the current result as full or degraded and record missing parts."""
+    missing_parts: list[str] = []
+
+    has_market = any(market_data.get(key) is not None for key in ("latest_price", "pct_change", "turnover"))
+    has_fund = fund_flow.get("main_net_inflow") is not None
+
+    if not has_market:
+        missing_parts.append("market_data")
+    elif market_data.get("used_previous_trading_day") or market_data.get("is_non_trading_session") or market_error:
+        missing_parts.append("realtime_market")
+
+    if not has_fund or fund_error:
+        missing_parts.append("fund_flow")
+
+    analysis_mode = "full" if not missing_parts else "degraded"
+    data_source = {
+        "market_data": str(market_data.get("data_source", "")),
+        "fund_flow": str(fund_flow.get("data_source", "")),
+    }
+    return analysis_mode, missing_parts, data_source
+
+
 def process_stock(
     stock: dict[str, str],
     all_spot_data: dict[str, dict[str, Any]] | None = None,
@@ -473,12 +502,17 @@ def process_stock(
         fund_elapsed = float(fund_call.get("elapsed_seconds", 0.0))
         market_result = market_call.get("result")
         if market_result is _TIMEOUT_SENTINEL:
-            market_error = "实时行情超时"
+            market_error = "市场数据超时"
         elif isinstance(market_result, Exception):
             market_error = str(market_result)
         elif isinstance(market_result, dict) and market_result and market_result.get("status") != "error":
             market_data.update(market_result)
         else:
+            if isinstance(market_result, dict):
+                if market_result.get("data_source"):
+                    market_data["data_source"] = market_result.get("data_source")
+                if market_result.get("missing_fields"):
+                    market_data["missing_fields"] = market_result.get("missing_fields")
             market_error = str((market_result or {}).get("error", "未获取到实时行情数据"))
 
         fund_result = fund_call.get("result")
@@ -537,20 +571,32 @@ def process_stock(
         else:
             ai_summary = _build_fast_summary(name, market_data, analysis, error=market_error or fund_error)
 
+        analysis_mode, missing_parts, data_sources = _build_analysis_mode(
+            market_data,
+            fund_flow,
+            market_error=market_error,
+            fund_error=fund_error,
+        )
         stock_elapsed = round(time.perf_counter() - stock_started, 3)
+        LOGGER.info("[%s] final analysis mode: %s missing_parts=%s", code, analysis_mode, missing_parts)
         LOGGER.info(
-            "[%s] stock pipeline finished in %.3fs. market_error=%s fund_error=%s score=%s",
+            "[%s] stock pipeline finished in %.3fs. market_error=%s fund_error=%s score=%s analysis_mode=%s missing_parts=%s",
             code,
             stock_elapsed,
             bool(market_error),
             bool(fund_error),
             score,
+            analysis_mode,
+            missing_parts,
         )
         return {
             "code": code,
             "name": name,
             "status": "ok",
             "score": score,
+            "analysis_mode": analysis_mode,
+            "missing_parts": missing_parts,
+            "data_source": data_sources,
             "market_data": market_data,
             "fund_flow": fund_flow,
             "analysis": analysis,

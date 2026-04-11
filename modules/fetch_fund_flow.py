@@ -62,6 +62,7 @@ def _call_fund_flow_api(code: str, market: str) -> tuple[pd.DataFrame, str]:
         func = getattr(ak, func_name, None)
         if func is None:
             continue
+        LOGGER.info("trying fund source: akshare.%s code=%s market=%s", func_name, code, market)
 
         call_variants: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
             ((), {"stock": code, "market": market}),
@@ -82,12 +83,14 @@ def _call_fund_flow_api(code: str, market: str) -> tuple[pd.DataFrame, str]:
                         args,
                         kwargs,
                     )
+                    LOGGER.info("fund source success: akshare.%s code=%s", func_name, code)
                     return dataframe, f"akshare.{func_name}"
             except TypeError as exc:
                 last_error = exc
                 continue
             except Exception as exc:  # pragma: no cover - runtime safety
                 last_error = exc
+                LOGGER.warning("fund source fail: akshare.%s code=%s error=%s", func_name, code, exc)
                 LOGGER.warning(
                     "akshare.%s call failed for stock %s with args=%s kwargs=%s: %s",
                     func_name,
@@ -114,6 +117,7 @@ def get_individual_fund_flow(code: str) -> dict[str, Any] | None:
     try:
         dataframe, data_source = _call_fund_flow_api(normalized_code, market)
     except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.warning("fund source fail: final code=%s error=%s", normalized_code, exc)
         LOGGER.exception(
             "Failed to fetch fund flow for stock %s on market %s: %s",
             normalized_code,
@@ -123,6 +127,7 @@ def get_individual_fund_flow(code: str) -> dict[str, Any] | None:
         return None
 
     if dataframe is None or dataframe.empty:
+        LOGGER.warning("fund source fail: final code=%s error=empty_dataframe", normalized_code)
         LOGGER.warning("Fund flow data is empty for stock %s.", normalized_code)
         return None
 

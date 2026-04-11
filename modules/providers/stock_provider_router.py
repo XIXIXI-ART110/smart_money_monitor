@@ -22,6 +22,8 @@ def _build_error_payload(
     name: str | None,
     primary_error: str,
     backup_error: str,
+    primary_source: str = "",
+    backup_source: str = "",
 ) -> dict[str, Any]:
     """Return the final fallback-safe payload when both providers fail."""
     LOGGER.warning(
@@ -34,7 +36,15 @@ def _build_error_payload(
         "code": code,
         "name": name or code,
         "status": "error",
-        "error": "未获取到实时行情数据",
+        "error": "；".join(part for part in (primary_error, backup_error) if part) or "未获取到实时行情数据",
+        "data_source": "; ".join(
+            part
+            for part in (
+                f"primary={primary_source}" if primary_source else "",
+                f"backup={backup_source}" if backup_source else "",
+            )
+            if part
+        ),
         "latest_price": None,
         "pct_change": None,
         "turnover": None,
@@ -47,23 +57,33 @@ def fetch_stock_data(code: str, name: str | None = None) -> dict[str, Any]:
     normalized_code = stock_primary_provider.normalize_code(code)
 
     primary_error = ""
+    primary_source = ""
     try:
         primary_result = stock_primary_provider.fetch_stock_data(normalized_code, name)
         if _is_usable_market_data(primary_result):
             return primary_result
-        primary_error = "primary returned empty data"
+        if isinstance(primary_result, dict):
+            primary_error = str(primary_result.get("error") or "primary returned empty data")
+            primary_source = str(primary_result.get("data_source") or "")
+        else:
+            primary_error = "primary returned empty data"
     except Exception as exc:  # pragma: no cover - runtime safety
         primary_error = str(exc)
         LOGGER.warning("Primary stock provider failed for %s: %s", normalized_code, exc)
 
     backup_error = ""
+    backup_source = ""
     try:
         backup_result = stock_backup_provider.fetch_stock_data(normalized_code, name)
         if _is_usable_market_data(backup_result):
             return backup_result
-        backup_error = "backup returned empty data"
+        if isinstance(backup_result, dict):
+            backup_error = str(backup_result.get("error") or "backup returned empty data")
+            backup_source = str(backup_result.get("data_source") or "")
+        else:
+            backup_error = "backup returned empty data"
     except Exception as exc:  # pragma: no cover - runtime safety
         backup_error = str(exc)
         LOGGER.warning("Backup stock provider failed for %s: %s", normalized_code, exc)
 
-    return _build_error_payload(normalized_code, name, primary_error, backup_error)
+    return _build_error_payload(normalized_code, name, primary_error, backup_error, primary_source, backup_source)
