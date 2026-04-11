@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import queue
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -155,6 +157,54 @@ def error_response(message: str, data: dict[str, Any] | None = None, *, route: s
     return payload
 
 
+def error_json_response(
+    message: str,
+    *,
+    status_code: int,
+    route: str,
+    details: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Return one explicit JSONResponse for API failures."""
+    payload = {
+        "ok": False,
+        "message": message,
+        "data": None,
+        "error_detail": details or {},
+    }
+    _log_api_response(
+        route,
+        {
+            "ok": False,
+            "message": message,
+            "data": details or {},
+        },
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def _call_route_with_timeout(func: Any, *, timeout_seconds: float, description: str) -> Any:
+    """Run one route task in a daemon thread so the API can still return JSON on timeout."""
+    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def runner() -> None:
+        try:
+            result_queue.put((True, func()))
+        except Exception as exc:  # pragma: no cover - runtime safety
+            result_queue.put((False, exc))
+
+    thread = threading.Thread(target=runner, name=f"api-route-{description}", daemon=True)
+    thread.start()
+
+    try:
+        ok, result = result_queue.get(timeout=timeout_seconds)
+    except queue.Empty:
+        raise TimeoutError(f"{description} timed out after {timeout_seconds:.1f}s")
+
+    if not ok:
+        raise result
+    return result
+
+
 @app.get("/")
 def serve_index() -> FileResponse:
     """Serve the local frontend entry page."""
@@ -297,43 +347,93 @@ def remove_etf(code: str) -> dict[str, Any]:
 
 @app.get("/api/run-once")
 @app.post("/api/run-once")
-def api_run_once() -> dict[str, Any]:
+def api_run_once(request: Request) -> JSONResponse:
     """Execute one full monitoring cycle and return structured results."""
-    result = run_once_service(
-        push_notification=False,
-        print_report=False,
-        enable_ai_summary=False,
-        market_timeout_seconds=2.5,
-        fund_flow_timeout_seconds=2.5,
-        ai_timeout_seconds=4.0,
-        total_timeout_seconds=8.0,
-        max_workers=3,
-    )
-    if not result["ok"]:
-        return error_response(
-            result["message"],
-            {
-                "report_path": result.get("report_path"),
-                "results": result.get("results", []),
-                "failed_symbols": result.get("failed_symbols", []),
-                "elapsed_seconds": result.get("elapsed_seconds"),
+    route = "/api/run-once"
+    _log_api_request_start(route, method=request.method)
+    try:
+        result = _call_route_with_timeout(
+            lambda: run_once_service(
+                push_notification=False,
+                print_report=False,
+                enable_ai_summary=False,
+                market_timeout_seconds=2.2,
+                fund_flow_timeout_seconds=2.2,
+                ai_timeout_seconds=4.0,
+                total_timeout_seconds=7.0,
+                max_workers=2,
+            ),
+            timeout_seconds=15.0,
+            description="run-once",
+        )
+    except TimeoutError as exc:
+        LOGGER.exception("Run-once API timed out: %s", exc)
+        return error_json_response(
+            "运行分析超时，请稍后重试",
+            status_code=504,
+            route=route,
+            details={
+                "reason": "route_timeout",
+                "error": str(exc),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - runtime safety
+        LOGGER.exception("Run-once API failed before response serialization: %s", exc)
+        return error_json_response(
+            "运行分析失败，请检查公网环境日志",
+            status_code=500,
+            route=route,
+            details={
+                "reason": "route_exception",
+                "error": str(exc),
             },
         )
 
-    return success_response(
+    if not isinstance(result, dict):
+        LOGGER.error("Run-once API returned non-dict result: %r", result)
+        return error_json_response(
+            "运行分析返回异常结果",
+            status_code=500,
+            route=route,
+            details={
+                "reason": "invalid_result",
+                "result_type": type(result).__name__,
+            },
+        )
+
+    results = result.get("results", [])
+    failed_symbols = result.get("failed_symbols", [])
+    if not result.get("ok", False) or not results:
+        return error_json_response(
+            str(result.get("message", "运行分析失败")),
+            status_code=502,
+            route=route,
+            details={
+                "reason": "no_usable_results" if not results else "service_error",
+                "report_path": result.get("report_path"),
+                "results": results,
+                "failed_symbols": failed_symbols,
+                "elapsed_seconds": result.get("elapsed_seconds"),
+                "notification": result.get("notification", {}),
+            },
+        )
+
+    payload = success_response(
         result.get("message", "run once completed"),
         {
             "report_path": result["report_path"],
             "report_content": result["report_content"],
-            "results": result["results"],
-            "failed_symbols": result.get("failed_symbols", []),
+            "results": results,
+            "failed_symbols": failed_symbols,
             "opportunity_rank": result.get("opportunity_rank", []),
             "elapsed_seconds": result["elapsed_seconds"],
             "market_sentiment": result.get("market_sentiment", {}),
             "style_distribution": result.get("style_distribution", []),
             "notification": result["notification"],
         },
+        route=route,
     )
+    return JSONResponse(status_code=200, content=payload)
 
 
 @app.post("/api/run-etf-once")

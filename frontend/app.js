@@ -593,9 +593,46 @@ function syncOpportunityModeSections() {
 
 function fetchJson(url, options) {
   return fetch(url, options).then(async (response) => {
-    const payload = await response.json();
-    if (!response.ok || payload.ok === false) throw new Error(payload.message || "请求失败");
+    const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+    const rawText = await response.text();
+    const trimmedText = rawText.trim();
+
+    if (!trimmedText) {
+      const error = new Error(`接口返回空响应 (${response.status})`);
+      error.status = response.status;
+      error.responseText = rawText;
+      throw error;
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(trimmedText);
+    } catch (_) {
+      const compactText = trimmedText.replace(/\s+/g, " ").slice(0, 160);
+      const hint = compactText ? `：${compactText}` : "";
+      const error = new Error(`接口返回非 JSON 内容 (${response.status}${contentType ? `, ${contentType}` : ""})${hint}`);
+      error.status = response.status;
+      error.responseText = rawText;
+      throw error;
+    }
+
+    if (!response.ok || payload?.ok === false) {
+      const detail = payload?.error_detail && typeof payload.error_detail === "object"
+        ? payload.error_detail
+        : {};
+      const reason = detail.error || detail.reason || "";
+      const suffix = reason ? ` (${reason})` : "";
+      const error = new Error(`${payload?.message || "请求失败"}${suffix}`);
+      error.status = response.status;
+      error.payload = payload;
+      error.responseText = rawText;
+      throw error;
+    }
+
     return payload;
+  }).catch((error) => {
+    if (error instanceof Error) throw error;
+    throw new Error("请求失败");
   });
 }
 
@@ -1331,7 +1368,9 @@ async function runStockAnalysis() {
     setChip(dom.stockNotify, notification.sent ? "飞书：已推送" : `飞书：${notification.reason || "未推送"}`, notification.sent ? "good" : "bad");
   } catch (error) {
     setChip(dom.stockRunStatus, `失败：${error.message}`, "bad");
+    setChip(dom.stockNotify, "飞书：未执行", "bad");
     dom.stockResults.innerHTML = `<div class="empty">个股分析失败：${esc(error.message)}</div>`;
+    dom.heatmap.innerHTML = `<div class="empty">本次未生成热力图：${esc(error.message)}</div>`;
   } finally {
     dom.runStockBtn.disabled = false;
   }

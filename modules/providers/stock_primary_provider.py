@@ -786,7 +786,11 @@ def fetch_stock_data(code: str, name: str | None = None) -> dict[str, Any]:
     """Fetch one stock with AKShare quote first and Tushare daily as fallback."""
     normalized_code = normalize_code(code)
     is_non_trading_session = not _is_a_share_trading_time()
-    akshare_result = fetch_akshare_display_data(normalized_code, name)
+    if is_non_trading_session:
+        LOGGER.info("Skip realtime quote for %s because current session is non-trading.", normalized_code)
+        akshare_result = {}
+    else:
+        akshare_result = fetch_akshare_display_data(normalized_code, name)
     hist_result = fetch_akshare_hist_data(normalized_code, name)
     daily_result = fetch_latest_daily_data(normalized_code, name)
     fallback_result = hist_result or daily_result
