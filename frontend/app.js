@@ -1,5 +1,6 @@
 const state = {
   stockPayload: null,
+  selectedSearchStock: null,
   selectedIndexes: [],
   availableIndexes: [],
   activeIndexCode: "",
@@ -96,6 +97,7 @@ function apiPath(path) {
 const api = {
   stocks: apiPath("/api/stocks"),
   runStocks: apiPath("/api/run-once"),
+  analyzeStock: (code, name = "") => apiPath(`/api/run-once?code=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`),
   indexes: apiPath("/api/indexes"),
   indexOptions: apiPath("/api/indexes/options"),
   indexDetail: (code) => apiPath(`/api/indexes/detail?code=${encodeURIComponent(code)}`),
@@ -1297,7 +1299,7 @@ function renderStockSearchDropdown(items, message = "") {
         <strong>${esc(item.name)}</strong>
         <small>${esc(item.code)}</small>
       </span>
-      <em>点击加入</em>
+      <em>点击分析</em>
     </button>
   `).join("");
   dom.stockSearchDropdown.classList.remove("hidden");
@@ -1328,6 +1330,7 @@ async function searchStockOptions() {
 function scheduleStockSearch() {
   window.clearTimeout(state.stockSearchTimer);
   const keyword = dom.stockSearchInput.value.trim();
+  state.selectedSearchStock = null;
   if (!keyword) {
     hideStockSearchDropdown();
     return;
@@ -1348,7 +1351,7 @@ async function loadStocks() {
 }
 
 async function addStock(stock = null) {
-  const target = stock || state.stockSearchResults[0];
+  const target = stock || state.selectedSearchStock || state.stockSearchResults[0];
   if (!target?.code || !target?.name) {
     alert("请先搜索并选择一只股票");
     return;
@@ -1367,6 +1370,41 @@ async function addStock(stock = null) {
     alert(`添加股票失败：${error.message}`);
   } finally {
     dom.addStockBtn.disabled = false;
+  }
+}
+
+async function openSearchedStock(stock = null) {
+  const target = stock || state.selectedSearchStock || state.stockSearchResults[0];
+  if (!target?.code || !target?.name) {
+    alert("请先搜索并选择一只股票");
+    return;
+  }
+
+  state.selectedSearchStock = target;
+  dom.stockSearchInput.value = `${target.code} ${target.name}`;
+  hideStockSearchDropdown();
+  switchView("stockView");
+  dom.runStockBtn.disabled = true;
+  setChip(dom.stockRunStatus, `正在分析：${target.name}`, "blue");
+  setChip(dom.stockElapsed, "耗时：--");
+  setChip(dom.stockNotify, "飞书：未执行", "bad");
+
+  try {
+    const payload = normalizeRunOncePayload(
+      await fetchJson(api.analyzeStock(target.code, target.name), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      })
+    );
+    state.stockPayload = payload;
+    renderStockResults(payload.data.results, payload.data.failed_details);
+    setChip(dom.stockRunStatus, `已打开：${target.name}`, "good");
+    setChip(dom.stockElapsed, `耗时：${num(payload.data?.elapsed_seconds ?? 0, 3)}秒`);
+  } catch (error) {
+    setChip(dom.stockRunStatus, `打开失败：${error.message}`, "bad");
+    dom.stockResults.innerHTML = `<div class="empty">个股打开失败：${esc(error.message)}</div>`;
+  } finally {
+    dom.runStockBtn.disabled = false;
   }
 }
 
@@ -1416,7 +1454,7 @@ dom.stockSearchInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
   event.preventDefault();
   if (state.stockSearchResults.length) {
-    addStock(state.stockSearchResults[0]);
+    openSearchedStock(state.stockSearchResults[0]);
   } else {
     searchStockOptions();
   }
@@ -1425,7 +1463,7 @@ dom.stockSearchDropdown.addEventListener("click", (event) => {
   const option = event.target.closest("[data-stock-result-index]");
   if (!option) return;
   const target = state.stockSearchResults[Number(option.dataset.stockResultIndex)];
-  addStock(target);
+  openSearchedStock(target);
 });
 document.addEventListener("click", (event) => {
   if (event.target.closest(".stock-search")) return;

@@ -69,20 +69,20 @@
         <div class="hero">
           <div>
             <h1>个股分析</h1>
-            <p>保留原有个股自选池和运行分析能力，结果继续来自 <code>/api/run-once</code>。</p>
+            <p>搜索是全市场入口，点击搜索结果可直接临时分析；自选股仅作为收藏列表，批量分析继续来自 <code>/api/run-once</code>。</p>
           </div>
         </div>
 
         <div class="two-col">
           <div class="panel">
             <h2>自选股管理</h2>
-            <p>支持查看、添加、删除股票，不影响指数 ETF 模块。</p>
+            <p>支持全市场搜索、临时打开分析，以及把目标股票加入自选，不影响指数 ETF 模块。</p>
             <div class="form">
               <div class="stock-search">
-                <input id="stockSearchInput" autocomplete="off" placeholder="输入股票代码或名称（如 600519 / 贵州茅台）">
+                <input id="stockSearchInput" autocomplete="off" placeholder="输入代码或名称（如 300014 / 亿纬锂能 / 中兴）">
                 <div id="stockSearchDropdown" class="stock-search-dropdown hidden"></div>
               </div>
-              <button id="addStockBtn" type="button">添加首个结果</button>
+              <button id="addStockBtn" type="button">加入自选</button>
             </div>
             <div class="chips"><span id="stockManageText" class="chip">正在加载自选股...</span></div>
             <div id="stockWatchList" class="watch-list" style="margin-top:14px;"></div>
