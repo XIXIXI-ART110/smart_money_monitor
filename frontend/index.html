@@ -2,9 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Smart Money Monitor</title>
-  <link rel="stylesheet" href="/static/styles.css?v=stock-score-20260410">
+  <link rel="stylesheet" href="/static/styles.css?v=style-service-v1-20260412">
 </head>
 <body>
   <div class="app">
@@ -14,6 +14,7 @@
         <button data-view="homeView">首页</button>
         <button data-view="stockView">个股分析</button>
         <button class="active" data-view="etfView">指数ETF</button>
+        <button data-view="styleFlowView">ETF资金流 / 风格博弈</button>
         <button data-view="opportunityView">低位机会池</button>
         <button data-view="heatView">市场热力图</button>
       </nav>
@@ -75,11 +76,11 @@
 
         <div class="two-col">
           <div class="panel">
-            <h2>自选股管理</h2>
-            <p>支持全市场搜索、临时打开分析，以及把目标股票加入自选，不影响指数 ETF 模块。</p>
+            <h2>我的自选 / 分析池</h2>
+            <p>支持全市场搜索、从低位机会池加入自选，以及把目标股票快速送入个股分析。</p>
             <div class="form">
               <div class="stock-search">
-                <input id="stockSearchInput" autocomplete="off" placeholder="输入代码或名称（如 300014 / 亿纬锂能 / 中兴）">
+                <input id="stockSearchInput" type="text" inputmode="search" autocomplete="off" placeholder="输入代码或名称（如 300014 / 亿纬锂能 / 中兴）">
                 <div id="stockSearchDropdown" class="stock-search-dropdown hidden"></div>
               </div>
               <button id="addStockBtn" type="button">加入自选</button>
@@ -107,13 +108,10 @@
         <div class="hero">
           <div>
             <h1>指数 ETF 联动看板</h1>
-            <p>主界面核心是指数卡片看板。点击任意指数卡片后，下方会立即展示这个指数今天的信息和对应 ETF 建议；右上角设置弹层只负责配置主界面显示哪些指数。</p>
+            <p>上方保留指数卡片看板和详情区；下方直接展示可添加的指数标签，点击即可加入当前看板，不再使用弹窗。</p>
           </div>
           <div class="topbar">
             <button id="refreshIndexBtn" class="primary-button" type="button">刷新数据</button>
-            <button id="openIndexSettingsBtn" class="icon-button" type="button" aria-label="打开指数设置">
-              <span class="icon-gear">⚙</span>
-            </button>
             <span id="indexBoardStatus" class="chip blue">正在准备指数卡片...</span>
           </div>
         </div>
@@ -123,7 +121,7 @@
             <div class="section-head">
               <div>
                 <h2>指数卡片看板</h2>
-                <p>默认显示当前配置中的指数列表，设置弹层中的增删和排序会立即同步到这里。</p>
+                <p>点击卡片查看详情，拖动可排序，右上角可直接从当前看板移除。</p>
               </div>
               <div class="chips" id="indexQuickChips"><span class="chip">等待数据</span></div>
             </div>
@@ -146,17 +144,52 @@
           </section>
         </div>
 
-        <details class="advanced-panel">
-          <summary>高级选项</summary>
-          <div class="advanced-panel-body">
-            <p>高级操作默认收起，不抢主内容。指数的添加、删除和排序请通过右上角设置弹层完成。</p>
+        <section class="index-add-card">
+          <div class="section-head">
+            <div>
+              <h2>添加指数</h2>
+              <p>直接点击下方标签即可加入看板；已经在看板中的指数不会重复出现在这里。</p>
+            </div>
             <div class="chips">
-              <button id="resetIndexBoardBtn" class="filter-button" type="button">恢复默认指数</button>
-              <button id="openIndexSettingsInlineBtn" class="filter-button" type="button">打开设置弹层</button>
-              <button id="refreshIndexInlineBtn" class="filter-button" type="button">重新拉取指数数据</button>
+              <span id="availableIndexCount" class="chip blue">0 项可添加</span>
             </div>
           </div>
-        </details>
+          <div id="availableIndexPool" class="available-index-pool"><div class="empty">正在加载可添加指数...</div></div>
+        </section>
+      </section>
+
+      <section id="styleFlowView" class="view">
+        <div class="hero">
+          <div>
+            <h1>ETF资金流 / 风格博弈</h1>
+            <p>基于现有 ETF 快照、涨跌幅与主力净流字段，推导当日市场风格资金流向和博弈意图。V1 先做方向判断，不追求逐笔机构还原。</p>
+          </div>
+          <div class="topbar">
+            <button id="refreshStyleFlowBtn" class="primary-button" type="button">刷新风格数据</button>
+            <span id="styleFlowStatus" class="chip blue">等待加载</span>
+          </div>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <h2>风格资金分布</h2>
+            <p>展示红利防御、大盘宽基、中小成长、高波题材、大金融和大宗商品等风格的净流向。</p>
+            <div class="chips"><span id="styleFlowMeta" class="chip">数据准备中</span></div>
+            <div id="styleFlowDistribution" class="style-flow-grid" style="margin-top:14px;"></div>
+          </div>
+
+          <div class="panel">
+            <h2>风格博弈意图</h2>
+            <p>根据风格净流强弱给出一句话判断，并附带核心解释口径。</p>
+            <div id="styleIntentPanel" class="style-intent-panel" style="margin-top:14px;"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>关联ETF列表</h2>
+          <p>每个风格下展示关联 ETF，点击可联动到指数 ETF 页面，或打开当前 ETF 的接口详情。</p>
+          <div id="styleEtfGroups" class="style-etf-groups" style="margin-top:14px;"></div>
+        </div>
       </section>
 
       <section id="opportunityView" class="view">
@@ -184,6 +217,38 @@
             <span id="opportunityStatus" class="chip blue">正在准备低位机会池...</span>
           </div>
         </div>
+
+        <section id="opportunityScanStats" class="opportunity-scan-stats hidden" aria-live="polite">
+          <div class="opportunity-scan-head">
+            <div>
+              <strong>扫描统计</strong>
+              <span id="opportunityScanModeText" class="sub">当前模式：--</span>
+              <span id="opportunityCacheInfoText" class="sub">今日机会池 · 更新时间 --</span>
+            </div>
+            <div class="chips">
+              <button id="opportunityRefreshBtn" class="filter-button" type="button" hidden>手动刷新今日机会池</button>
+              <div class="chips" id="opportunityScanBadges"></div>
+            </div>
+          </div>
+          <div class="opportunity-scan-grid">
+            <div class="opportunity-scan-item">
+              <small>扫描总数</small>
+              <strong id="opportunityScannedTotal">--</strong>
+            </div>
+            <div class="opportunity-scan-item">
+              <small>预筛数量</small>
+              <strong id="opportunityPrefilteredTotal">--</strong>
+            </div>
+            <div class="opportunity-scan-item">
+              <small>精算数量</small>
+              <strong id="opportunityRefinedTotal">--</strong>
+            </div>
+            <div class="opportunity-scan-item">
+              <small>返回机会数</small>
+              <strong id="opportunityReturnedTotal">--</strong>
+            </div>
+          </div>
+        </section>
 
         <section class="opportunity-shell">
           <div class="section-head">
@@ -222,35 +287,6 @@
     </main>
   </div>
 
-  <div id="indexSettingsModal" class="modal-shell hidden" aria-hidden="true">
-    <div id="indexSettingsBackdrop" class="modal-backdrop"></div>
-    <aside class="settings-drawer" role="dialog" aria-modal="true" aria-labelledby="indexSettingsTitle">
-      <div class="settings-head">
-        <div>
-          <h2 id="indexSettingsTitle">指数卡片设置</h2>
-          <p>这里管理主界面要显示哪些指数卡片，以及它们的展示顺序。</p>
-        </div>
-        <button id="closeIndexSettingsBtn" class="icon-button ghost-icon" type="button" aria-label="关闭设置">✕</button>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-head">
-          <h3>已添加指数</h3>
-          <span id="selectedIndexCount" class="chip blue">0 项</span>
-        </div>
-        <div id="selectedIndexList" class="selected-index-list"><div class="empty">正在加载已添加指数...</div></div>
-      </div>
-
-      <div class="settings-section">
-        <div class="settings-section-head">
-          <h3>可选指数池</h3>
-          <span id="availableIndexCount" class="chip blue">0 项</span>
-        </div>
-        <div id="availableIndexPool" class="available-index-pool"><div class="empty">正在加载可选指数...</div></div>
-      </div>
-    </aside>
-  </div>
-
-  <script src="/static/app.js?v=run-once-result-path-20260411"></script>
+  <script src="/static/app.js?v=style-service-v1-20260412"></script>
 </body>
 </html>

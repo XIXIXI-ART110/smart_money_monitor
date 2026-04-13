@@ -19,12 +19,14 @@ from modules.opportunity_service import (
     get_auto_recommendation,
     get_low_opportunity_pool,
     get_opportunities,
+    get_opportunities_payload,
     get_opportunity_detail,
     get_stock_low_opportunity_pool,
 )
 from modules.opportunity_review import calculate_hit_stats, load_opportunity_history, review_opportunities
 from modules.report_service import get_latest_report, get_report_by_filename, list_reports
 from modules.run_service import process_stock, run_once_service
+from modules.style_service import get_style_fund_flow_service, get_style_intent_service
 from modules.stock_search_service import search_stocks
 from modules.watchlist_service import add_stock, delete_stock, load_watchlist
 
@@ -34,6 +36,9 @@ class StockPayload(BaseModel):
 
     code: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=50)
+    source: str | None = Field(default=None, max_length=50)
+    board: str | None = Field(default=None, max_length=20)
+    added_at: str | None = Field(default=None, max_length=40)
 
 
 class ConfigUpdatePayload(BaseModel):
@@ -54,7 +59,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://127.0.0.1:8000",
+        "http://127.0.0.1:8001",
         "http://localhost:8000",
+        "http://localhost:8001",
         "null",
     ],
     allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
@@ -325,7 +332,13 @@ def create_stock(payload: StockPayload) -> dict[str, Any]:
     """Add one stock to the watchlist."""
     _log_api_request_start("/api/stocks", method="POST", code=payload.code)
     existing_codes = {item["code"] for item in load_watchlist()}
-    stocks = add_stock(payload.code, payload.name)
+    stocks = add_stock(
+        payload.code,
+        payload.name,
+        source=payload.source,
+        board=payload.board,
+        added_at=payload.added_at,
+    )
     normalized_code = str(payload.code).strip().zfill(6)
     message = "stock added"
     if normalized_code in existing_codes:
@@ -651,6 +664,43 @@ def get_index_detail_api(code: str) -> dict[str, Any]:
     )
 
 
+@app.get("/api/style-fund-flow")
+def get_style_fund_flow_api() -> dict[str, Any]:
+    """Return V1 style-level ETF fund-flow aggregation."""
+    route = "/api/style-fund-flow"
+    _log_api_request_start(route)
+    result = get_style_fund_flow_service()
+    return success_response(
+        "style fund flow loaded",
+        {
+            "items": result.get("items", []),
+            "styles": result.get("items", []),
+            "summary": result.get("summary", {}),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+        route=route,
+    )
+
+
+@app.get("/api/style-intent")
+def get_style_intent_api() -> dict[str, Any]:
+    """Return V1 market-style intent inference from ETF snapshots."""
+    route = "/api/style-intent"
+    _log_api_request_start(route)
+    result = get_style_intent_service()
+    return success_response(
+        "style intent loaded",
+        {
+            "item": result.get("item", {}),
+            "items": [result.get("item", {})] if result.get("item") else [],
+            "styles": result.get("styles", []),
+            "summary": result.get("summary", {}),
+            "elapsed_seconds": result.get("elapsed_seconds", 0),
+        },
+        route=route,
+    )
+
+
 @app.get("/api/index/list")
 def get_index_board_api() -> dict[str, Any]:
     """Compatibility alias for the old index board route."""
@@ -705,19 +755,31 @@ def get_low_opportunity_api() -> dict[str, Any]:
 
 
 @app.get("/api/opportunities")
-def get_opportunities_api(board: str = "all", scope: str = "market") -> dict[str, Any]:
+def get_opportunities_api(board: str = "all", scope: str = "market", force_refresh: bool = False) -> dict[str, Any]:
     """Return the StockScoreService-based low-position opportunity pool."""
     requested_board = str(board or "all").strip().lower()
     normalized_board = requested_board if requested_board in {"all", "gem", "sz_main", "sh_main", "star"} else "all"
     requested_scope = str(scope or "market").strip().lower()
     normalized_scope = requested_scope if requested_scope in {"market", "watchlist"} else "market"
+    payload = get_opportunities_payload(
+        limit=10,
+        board=normalized_board,
+        scope=normalized_scope,
+        force_refresh=force_refresh,
+    )
     return success_response(
         "opportunities loaded",
         {
             "scope": normalized_scope,
             "scope_name": SCOPE_NAMES.get(normalized_scope, "全市场"),
             "board": normalized_board,
-            "items": get_opportunities(limit=10, board=normalized_board, scope=normalized_scope),
+            "mode": payload.get("mode", "pool"),
+            "cache_date": payload.get("cache_date", ""),
+            "generated_at": payload.get("generated_at", ""),
+            "is_cached": bool(payload.get("is_cached")),
+            "used_full_market_scan": bool(payload.get("used_full_market_scan")),
+            "items": payload.get("items", []),
+            "scan_stats": payload.get("scan_stats", {}),
         },
     )
 

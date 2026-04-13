@@ -1,11 +1,17 @@
 const state = {
   stockPayload: null,
   selectedSearchStock: null,
+  watchStocks: [],
+  selectedWatchCodes: [],
+  pendingWatchMutationCodes: [],
+  stockResultOrder: [],
+  hiddenStockResultCodes: [],
   selectedIndexes: [],
   availableIndexes: [],
+  indexBoardOrder: [],
+  hiddenIndexCodes: [],
   activeIndexCode: "",
   activeIndexDetail: null,
-  isIndexModalOpen: false,
   opportunityMode: "stock",
   opportunityScope: "market",
   opportunityBoard: "all",
@@ -13,12 +19,17 @@ const state = {
   indexOpportunityItems: [],
   stockOpportunityItems: [],
   lowOpportunityItems: [],
+  opportunityScanStats: null,
+  opportunityCacheMeta: null,
   recommendedOpportunity: null,
   activeOpportunityCode: "",
   activeOpportunityDetail: null,
+  styleFlowPayload: null,
+  styleIntentPayload: null,
   stockSearchResults: [],
   stockSearchTimer: null,
-  stockSearchRequestId: 0
+  stockSearchRequestId: 0,
+  toastTimer: 0,
 };
 
 const dom = {
@@ -45,29 +56,35 @@ const dom = {
   stockNotify: document.getElementById("stockNotify"),
   stockResults: document.getElementById("stockResults"),
   refreshIndexBtn: document.getElementById("refreshIndexBtn"),
-  openIndexSettingsBtn: document.getElementById("openIndexSettingsBtn"),
-  openIndexSettingsInlineBtn: document.getElementById("openIndexSettingsInlineBtn"),
-  closeIndexSettingsBtn: document.getElementById("closeIndexSettingsBtn"),
-  indexSettingsModal: document.getElementById("indexSettingsModal"),
-  indexSettingsBackdrop: document.getElementById("indexSettingsBackdrop"),
   indexBoardStatus: document.getElementById("indexBoardStatus"),
   indexQuickChips: document.getElementById("indexQuickChips"),
   indexBoardGrid: document.getElementById("indexBoardGrid"),
   indexSelectionStatus: document.getElementById("indexSelectionStatus"),
   indexDetailPanel: document.getElementById("indexDetailPanel"),
+  refreshStyleFlowBtn: document.getElementById("refreshStyleFlowBtn"),
+  styleFlowStatus: document.getElementById("styleFlowStatus"),
+  styleFlowMeta: document.getElementById("styleFlowMeta"),
+  styleFlowDistribution: document.getElementById("styleFlowDistribution"),
+  styleIntentPanel: document.getElementById("styleIntentPanel"),
+  styleEtfGroups: document.getElementById("styleEtfGroups"),
   opportunityStatus: document.getElementById("opportunityStatus"),
+  opportunityScanStats: document.getElementById("opportunityScanStats"),
+  opportunityScanModeText: document.getElementById("opportunityScanModeText"),
+  opportunityCacheInfoText: document.getElementById("opportunityCacheInfoText"),
+  opportunityScanBadges: document.getElementById("opportunityScanBadges"),
+  opportunityRefreshBtn: document.getElementById("opportunityRefreshBtn"),
+  opportunityScannedTotal: document.getElementById("opportunityScannedTotal"),
+  opportunityPrefilteredTotal: document.getElementById("opportunityPrefilteredTotal"),
+  opportunityRefinedTotal: document.getElementById("opportunityRefinedTotal"),
+  opportunityReturnedTotal: document.getElementById("opportunityReturnedTotal"),
   opportunityTabs: document.getElementById("opportunityTabs"),
   opportunityScopeTabs: document.getElementById("opportunityScopeTabs"),
   opportunityBoardTabs: document.getElementById("opportunityBoardTabs"),
   opportunityRecommendCard: document.getElementById("opportunityRecommendCard"),
   opportunityPoolList: document.getElementById("opportunityPoolList"),
   opportunityDetailPanel: document.getElementById("opportunityDetailPanel"),
-  selectedIndexCount: document.getElementById("selectedIndexCount"),
   availableIndexCount: document.getElementById("availableIndexCount"),
-  selectedIndexList: document.getElementById("selectedIndexList"),
   availableIndexPool: document.getElementById("availableIndexPool"),
-  resetIndexBoardBtn: document.getElementById("resetIndexBoardBtn"),
-  refreshIndexInlineBtn: document.getElementById("refreshIndexInlineBtn"),
   heatmap: document.getElementById("heatmap")
 };
 
@@ -79,14 +96,23 @@ const API_BASE = (() => {
   const normalizedBase = String(configuredBase).trim().replace(/\/+$/, "");
   if (normalizedBase) return normalizedBase;
 
-  const localApiBase = "http://127.0.0.1:8000";
   const { protocol, hostname, port } = window.location;
   const isLocalHost = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+
   if ((protocol === "http:" || protocol === "https:") && isLocalHost) {
-    return port === "8000" ? "" : localApiBase;
+    // When the frontend is served by FastAPI locally, prefer same-origin API calls.
+    return "";
   }
-  if (protocol === "file:") return localApiBase;
+  if (protocol === "file:") {
+    return port === "8000" ? "http://127.0.0.1:8000" : "http://127.0.0.1:8001";
+  }
   return "";
+})();
+
+const IS_LOCAL_DEV = (() => {
+  const { protocol, hostname } = window.location;
+  const isLocalHost = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+  return protocol === "file:" || isLocalHost;
 })();
 
 function apiPath(path) {
@@ -101,7 +127,9 @@ const api = {
   indexes: apiPath("/api/indexes"),
   indexOptions: apiPath("/api/indexes/options"),
   indexDetail: (code) => apiPath(`/api/indexes/detail?code=${encodeURIComponent(code)}`),
-  opportunities: (scope = "market", board = "all") => apiPath(`/api/opportunities?scope=${encodeURIComponent(scope)}&board=${encodeURIComponent(board)}`),
+  styleFundFlow: apiPath("/api/style-fund-flow"),
+  styleIntent: apiPath("/api/style-intent"),
+  opportunities: (scope = "market", board = "all", forceRefresh = false) => apiPath(`/api/opportunities?scope=${encodeURIComponent(scope)}&board=${encodeURIComponent(board)}${forceRefresh ? "&force_refresh=true" : ""}`),
   lowOpportunity: apiPath("/api/opportunity/low"),
   stockLowOpportunity: apiPath("/api/opportunity/stock_low"),
   opportunityRecommend: apiPath("/api/opportunity/recommend"),
@@ -123,11 +151,17 @@ const OPPORTUNITY_BOARD_LABELS = {
 };
 
 const NAV_VIEW_STORAGE_KEY = "smart-money-monitor:last-view";
+const WATCH_SELECTION_STORAGE_KEY = "smart-money-monitor:selected-watch-codes";
+const STOCK_RESULT_ORDER_STORAGE_KEY = "smart-money-monitor:stock-results-order:v1";
+const STOCK_RESULT_HIDDEN_STORAGE_KEY = "smart-money-monitor:stock-results-hidden:v1";
+const INDEX_BOARD_ORDER_STORAGE_KEY = "smart-money-monitor:index-board-order:v1";
+const INDEX_BOARD_HIDDEN_STORAGE_KEY = "smart-money-monitor:index-board-hidden:v1";
 const DEFAULT_VIEW_ID = "etfView";
 const NAV_VIEW_KEY_TO_ID = {
   home: "homeView",
   stock: "stockView",
   etf: "etfView",
+  style_flow: "styleFlowView",
   opportunities: "opportunityView",
   heatmap: "heatView"
 };
@@ -243,9 +277,409 @@ const tone = (value) => {
   return "flat";
 };
 
+function firstDefinedValue(...values) {
+  return values.find((value) => value !== null && value !== undefined && value !== "");
+}
+
+function dedupeIds(values) {
+  return [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  )];
+}
+
+function readStoredIdArray(key) {
+  try {
+    return dedupeIds(JSON.parse(localStorage.getItem(key) || "[]"));
+  } catch (error) {
+    console.warn(`Failed to read localStorage key: ${key}`, error);
+    return [];
+  }
+}
+
+function persistStoredIdArray(key, values) {
+  try {
+    localStorage.setItem(key, JSON.stringify(dedupeIds(values)));
+  } catch (error) {
+    console.warn(`Failed to persist localStorage key: ${key}`, error);
+  }
+}
+
+function replaceStoredIdArray(key, values, assign) {
+  const normalized = dedupeIds(values);
+  assign(normalized);
+  persistStoredIdArray(key, normalized);
+}
+
+function removeIds(source, idsToRemove) {
+  if (!idsToRemove.length) return dedupeIds(source);
+  const removed = new Set(dedupeIds(idsToRemove));
+  return dedupeIds(source).filter((id) => !removed.has(id));
+}
+
+function appendIds(source, idsToAppend) {
+  return dedupeIds([...(Array.isArray(source) ? source : []), ...dedupeIds(idsToAppend)]);
+}
+
+function orderItemsByStoredIds(items, getId, orderedIds) {
+  const itemMap = new Map();
+  const unordered = [];
+
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const id = getId(item);
+    if (!id || itemMap.has(id)) {
+      unordered.push(item);
+      return;
+    }
+    itemMap.set(id, item);
+  });
+
+  const ordered = [];
+  dedupeIds(orderedIds).forEach((id) => {
+    const item = itemMap.get(id);
+    if (!item) return;
+    ordered.push(item);
+    itemMap.delete(id);
+  });
+
+  return [...ordered, ...itemMap.values(), ...unordered];
+}
+
+function getStockResultId(item) {
+  return String(item?.code || item?.symbol || "").trim();
+}
+
+function getIndexCardId(item) {
+  return String(item?.code || item?.index_code || item?.symbol || "").trim();
+}
+
+function reorderItemsByIds(items, ids, getId) {
+  return orderItemsByStoredIds(items, getId, ids);
+}
+
+function persistedStockResults(results) {
+  const visibleResults = (Array.isArray(results) ? results : []).filter((item) => {
+    const id = getStockResultId(item);
+    return id && !state.hiddenStockResultCodes.includes(id);
+  });
+  const ordered = orderItemsByStoredIds(visibleResults, getStockResultId, state.stockResultOrder);
+  const nextOrder = ordered.map((item) => getStockResultId(item)).filter(Boolean);
+  replaceStoredIdArray(STOCK_RESULT_ORDER_STORAGE_KEY, nextOrder, (value) => {
+    state.stockResultOrder = value;
+  });
+  return ordered;
+}
+
+function clearHiddenStockResultsForIncomingItems(results) {
+  const incomingIds = dedupeIds((Array.isArray(results) ? results : []).map((item) => getStockResultId(item)));
+  if (!incomingIds.length) return;
+  replaceStoredIdArray(
+    STOCK_RESULT_HIDDEN_STORAGE_KEY,
+    removeIds(state.hiddenStockResultCodes, incomingIds),
+    (value) => {
+      state.hiddenStockResultCodes = value;
+    }
+  );
+}
+
+function persistIndexBoardState() {
+  replaceStoredIdArray(
+    INDEX_BOARD_ORDER_STORAGE_KEY,
+    state.selectedIndexes.map((item) => getIndexCardId(item)),
+    (value) => {
+      state.indexBoardOrder = value;
+    }
+  );
+  replaceStoredIdArray(
+    INDEX_BOARD_HIDDEN_STORAGE_KEY,
+    state.hiddenIndexCodes,
+    (value) => {
+      state.hiddenIndexCodes = value;
+    }
+  );
+}
+
+function buildPersistedIndexSelection(defaultIndexes, allOptions) {
+  const defaultItems = Array.isArray(defaultIndexes) ? defaultIndexes : [];
+  const pool = Array.isArray(allOptions) && allOptions.length ? allOptions : defaultItems;
+  const poolMap = new Map(pool.map((item) => [getIndexCardId(item), item]));
+  const hiddenSet = new Set(state.hiddenIndexCodes);
+  const ordered = [];
+  const seen = new Set();
+
+  dedupeIds(state.indexBoardOrder).forEach((id) => {
+    const item = poolMap.get(id);
+    if (!item || hiddenSet.has(id) || seen.has(id)) return;
+    ordered.push(item);
+    seen.add(id);
+  });
+
+  defaultItems.forEach((item) => {
+    const id = getIndexCardId(item);
+    if (!id || hiddenSet.has(id) || seen.has(id)) return;
+    ordered.push(poolMap.get(id) || item);
+    seen.add(id);
+  });
+
+  return ordered;
+}
+
+function clearIndexBoardPersistence() {
+  state.indexBoardOrder = [];
+  state.hiddenIndexCodes = [];
+  persistIndexBoardState();
+}
+
+function getRenderedIds(container, itemSelector, dataAttribute) {
+  return [...container.querySelectorAll(itemSelector)]
+    .map((element) => String(element.dataset[dataAttribute] || "").trim())
+    .filter(Boolean);
+}
+
+function createSortableGrid(container, options) {
+  let dragState = null;
+
+  function cleanupDrag(event) {
+    if (!dragState) return;
+    const current = dragState;
+    if (current.handle?.releasePointerCapture && event?.pointerId !== undefined) {
+      try {
+        current.handle.releasePointerCapture(event.pointerId);
+      } catch (_) {
+        // Ignore release errors from stale pointer captures.
+      }
+    }
+    window.removeEventListener("pointermove", handlePointerMove);
+    window.removeEventListener("pointerup", handlePointerEnd);
+    window.removeEventListener("pointercancel", handlePointerEnd);
+
+    if (current.phase === "active") {
+      current.card.classList.remove("is-dragging");
+      current.container.classList.remove("is-sorting");
+      document.body.classList.remove("dragging-cards");
+      current.card.style.position = "";
+      current.card.style.left = "";
+      current.card.style.top = "";
+      current.card.style.width = "";
+      current.card.style.height = "";
+      current.card.style.zIndex = "";
+      current.card.style.pointerEvents = "";
+      current.card.style.margin = "";
+      if (current.placeholder?.parentNode) {
+        current.placeholder.parentNode.insertBefore(current.card, current.placeholder);
+        current.placeholder.remove();
+      }
+    }
+
+    dragState = null;
+  }
+
+  function closestItem(clientX, clientY) {
+    const elements = [...container.querySelectorAll(options.itemSelector)]
+      .filter((element) => element !== dragState?.card);
+    if (!elements.length) return null;
+
+    return elements.reduce((best, element) => {
+      const rect = element.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const distance = Math.hypot(centerX - clientX, centerY - clientY);
+      if (!best || distance < best.distance) {
+        return { element, rect, centerX, centerY, distance };
+      }
+      return best;
+    }, null);
+  }
+
+  function placePlaceholder(clientX, clientY) {
+    if (!dragState?.placeholder) return;
+    const target = closestItem(clientX, clientY);
+    if (!target) return;
+    const shouldInsertAfter = clientY > target.centerY
+      || (Math.abs(clientY - target.centerY) < target.rect.height * 0.32 && clientX > target.centerX);
+    const referenceNode = shouldInsertAfter ? target.element.nextSibling : target.element;
+    if (referenceNode === dragState.placeholder) return;
+    container.insertBefore(dragState.placeholder, referenceNode);
+  }
+
+  function updateFloatingCard(clientX, clientY) {
+    dragState.card.style.left = `${clientX - dragState.offsetX}px`;
+    dragState.card.style.top = `${clientY - dragState.offsetY}px`;
+  }
+
+  function beginActiveDrag(event) {
+    const rect = dragState.card.getBoundingClientRect();
+    dragState.phase = "active";
+    dragState.offsetX = event.clientX - rect.left;
+    dragState.offsetY = event.clientY - rect.top;
+    dragState.placeholder = document.createElement("div");
+    dragState.placeholder.className = "card-sort-placeholder";
+    dragState.placeholder.style.height = `${rect.height}px`;
+    dragState.container.insertBefore(dragState.placeholder, dragState.card.nextSibling);
+    dragState.card.classList.add("is-dragging");
+    dragState.container.classList.add("is-sorting");
+    document.body.classList.add("dragging-cards");
+    dragState.card.style.width = `${rect.width}px`;
+    dragState.card.style.height = `${rect.height}px`;
+    dragState.card.style.position = "fixed";
+    dragState.card.style.left = `${rect.left}px`;
+    dragState.card.style.top = `${rect.top}px`;
+    dragState.card.style.zIndex = "80";
+    dragState.card.style.pointerEvents = "none";
+    dragState.card.style.margin = "0";
+    updateFloatingCard(event.clientX, event.clientY);
+    placePlaceholder(event.clientX, event.clientY);
+  }
+
+  function handlePointerMove(event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) return;
+    const distance = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
+    if (dragState.phase === "pending") {
+      if (distance < 8) return;
+      beginActiveDrag(event);
+    }
+    if (dragState.phase !== "active") return;
+    event.preventDefault();
+    updateFloatingCard(event.clientX, event.clientY);
+    placePlaceholder(event.clientX, event.clientY);
+  }
+
+  function handlePointerEnd(event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) return;
+    const shouldCommit = dragState.phase === "active";
+    cleanupDrag(event);
+    if (!shouldCommit) return;
+    const ids = getRenderedIds(container, options.itemSelector, options.dataAttribute);
+    options.onCommit(dedupeIds(ids));
+  }
+
+  container.addEventListener("pointerdown", (event) => {
+    const handle = event.target.closest(options.handleSelector);
+    if (!handle) return;
+    const card = handle.closest(options.itemSelector);
+    if (!card) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if (dragState) cleanupDrag(event);
+    event.preventDefault();
+    event.stopPropagation();
+    dragState = {
+      phase: "pending",
+      container,
+      card,
+      handle,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: 0,
+      offsetY: 0,
+      placeholder: null,
+    };
+    if (handle.setPointerCapture) {
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch (_) {
+        // Ignore pointer capture errors on unsupported browsers.
+      }
+    }
+    window.addEventListener("pointermove", handlePointerMove, { passive: false });
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+  });
+}
+
+function hiddenFundTagByScore(score) {
+  if (!hasNumericValue(score)) return "";
+  const numeric = Number(score);
+  if (numeric >= 80) return "强吸筹";
+  if (numeric >= 60) return "吸筹";
+  if (numeric >= 40) return "中性";
+  if (numeric >= 20) return "出货";
+  return "强出货";
+}
+
+function hiddenFundToneClass(score, tag) {
+  const rawTag = String(tag || "").trim();
+  if (rawTag.includes("强吸筹") || rawTag.includes("吸筹")) return "up";
+  if (rawTag.includes("强出货") || rawTag.includes("出货")) return "down";
+  if (hasNumericValue(score)) {
+    const numeric = Number(score);
+    if (numeric >= 60) return "up";
+    if (numeric < 40) return "down";
+  }
+  return "flat";
+}
+
+const NO_HIDDEN_FUND_MESSAGE = "暂无明显主力吸筹或出货信号";
+
+function resolveHiddenFundData(item) {
+  const analysis = item?.analysis && typeof item.analysis === "object" ? item.analysis : {};
+  const score = item?.score && typeof item.score === "object" ? item.score : {};
+  const rawScore = firstDefinedValue(
+    analysis.hidden_fund_score,
+    score.hidden_fund_score,
+    item?.hidden_fund_score
+  );
+  const hiddenFundScore = hasNumericValue(rawScore)
+    ? Math.max(0, Math.min(100, Number(rawScore)))
+    : null;
+  const rawTag = firstDefinedValue(
+    analysis.hidden_fund_tag,
+    score.hidden_fund_tag,
+    item?.hidden_fund_tag
+  );
+  const rawReason = firstDefinedValue(
+    analysis.hidden_fund_reason,
+    score.hidden_fund_reason,
+    item?.hidden_fund_reason
+  );
+  const rawLabels = firstArrayValue(
+    analysis.hidden_fund_labels,
+    score.hidden_fund_labels,
+    item?.hidden_fund_labels
+  );
+  const hiddenFundLabels = rawLabels
+    .map((label) => String(label ?? "").trim())
+    .filter(Boolean);
+  const hiddenFundTag = String(rawTag || hiddenFundTagByScore(hiddenFundScore)).trim();
+  const hiddenFundReason = String(rawReason || "").trim();
+  const hasSignal = hiddenFundScore !== null || Boolean(hiddenFundTag) || Boolean(hiddenFundReason) || hiddenFundLabels.length > 0;
+  return {
+    hasSignal,
+    score: hiddenFundScore,
+    scoreText: hiddenFundScore === null ? "--" : `${Math.round(hiddenFundScore)}分`,
+    tag: hiddenFundTag || "中性观察",
+    reason: hiddenFundReason || NO_HIDDEN_FUND_MESSAGE,
+    labels: hiddenFundLabels,
+    toneClass: hiddenFundToneClass(hiddenFundScore, hiddenFundTag),
+    meterWidth: hiddenFundScore === null ? 0 : Math.max(6, Math.min(100, Number(hiddenFundScore))),
+  };
+}
+
 function setChip(el, text, toneName = "") {
   el.textContent = text;
   el.className = `chip ${toneName}`.trim();
+}
+
+function ensureToastElement() {
+  let toast = document.getElementById("appToast");
+  if (toast) return toast;
+  toast = document.createElement("div");
+  toast.id = "appToast";
+  toast.className = "app-toast hidden";
+  toast.setAttribute("aria-live", "polite");
+  document.body.appendChild(toast);
+  return toast;
+}
+
+function showToast(message, toneName = "blue") {
+  const toast = ensureToastElement();
+  window.clearTimeout(state.toastTimer);
+  toast.textContent = message;
+  toast.className = `app-toast ${toneName}`.trim();
+  state.toastTimer = window.setTimeout(() => {
+    toast.classList.add("hidden");
+  }, 2200);
 }
 
 function normalizeViewId(view) {
@@ -288,18 +722,155 @@ function restoreActiveView() {
   switchView(readStoredViewId() || DEFAULT_VIEW_ID, { persist: false });
 }
 
+function persistWatchSelection(codes) {
+  try {
+    localStorage.setItem(WATCH_SELECTION_STORAGE_KEY, JSON.stringify(codes));
+  } catch (error) {
+    console.warn("Failed to persist watch selection", error);
+  }
+}
+
+function isWatchlisted(code) {
+  const normalizedCode = String(code || "").trim();
+  return state.watchStocks.some((item) => String(item.code || "").trim() === normalizedCode);
+}
+
+function isWatchMutationPending(code) {
+  const normalizedCode = String(code || "").trim();
+  return state.pendingWatchMutationCodes.includes(normalizedCode);
+}
+
+function setWatchMutationPending(code, pending) {
+  const normalizedCode = String(code || "").trim();
+  if (!normalizedCode) return;
+  const nextCodes = new Set(state.pendingWatchMutationCodes);
+  if (pending) nextCodes.add(normalizedCode);
+  else nextCodes.delete(normalizedCode);
+  state.pendingWatchMutationCodes = [...nextCodes];
+}
+
+function watchSourceLabel(item) {
+  const source = String(item?.source || "").trim();
+  if (source === "opportunity_pool") return "来自机会池";
+  if (source === "stock_search") return "来自搜索";
+  return "手动关注";
+}
+
+function readStoredWatchSelection() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WATCH_SELECTION_STORAGE_KEY) || "[]");
+    return Array.isArray(raw) ? raw.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  } catch (error) {
+    console.warn("Failed to read watch selection", error);
+    return [];
+  }
+}
+
+function syncWatchSelection(items) {
+  const validCodes = new Set(items.map((item) => String(item.code || "").trim()).filter(Boolean));
+  state.selectedWatchCodes = state.selectedWatchCodes.filter((code) => validCodes.has(code));
+  persistWatchSelection(state.selectedWatchCodes);
+}
+
+function updateWatchManageText() {
+  const total = state.watchStocks.length;
+  const selected = state.selectedWatchCodes.length;
+  const suffix = selected ? ` · 已选中 ${selected} 只` : "";
+  setChip(dom.stockManageText, `当前自选股：${total}只${suffix}`);
+}
+
+function buildWatchPayload(stock, source = "manual") {
+  const code = String(stock?.code || "").trim();
+  const name = String(stock?.name || "").trim() || code;
+  const board = String(stock?.board || "").trim();
+  return {
+    code,
+    name,
+    source,
+    board,
+    added_at: new Date().toISOString(),
+  };
+}
+
+async function saveWatchStock(payload, options = {}) {
+  const code = String(payload?.code || "").trim();
+  const name = String(payload?.name || "").trim() || code;
+  const remove = options.remove === true;
+  if (!code || !name) return false;
+  if (isWatchMutationPending(code)) return false;
+
+  setWatchMutationPending(code, true);
+  try {
+    if (remove) {
+      await fetchJson(`${api.stocks}/${encodeURIComponent(code)}`, { method: "DELETE" });
+      showToast(`已取消关注 ${name}`);
+    } else {
+      await fetchJson(api.stocks, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      showToast(`已加入自选：${name}`, "good");
+    }
+    await loadStocks();
+    renderRecommendedOpportunity();
+    renderOpportunityPool();
+    renderOpportunityDetail();
+    return true;
+  } catch (error) {
+    showToast(remove ? `取消关注失败：${error.message}` : `加入自选失败：${error.message}`, "bad");
+    return false;
+  } finally {
+    setWatchMutationPending(code, false);
+    renderRecommendedOpportunity();
+    renderOpportunityPool();
+    renderOpportunityDetail();
+  }
+}
+
+function toggleWatchSelection(code) {
+  const normalizedCode = String(code || "").trim();
+  if (!normalizedCode) return;
+  const selectedSet = new Set(state.selectedWatchCodes);
+  if (selectedSet.has(normalizedCode)) {
+    selectedSet.delete(normalizedCode);
+  } else {
+    selectedSet.add(normalizedCode);
+  }
+  state.selectedWatchCodes = state.watchStocks
+    .map((item) => String(item.code || "").trim())
+    .filter((itemCode) => selectedSet.has(itemCode));
+  persistWatchSelection(state.selectedWatchCodes);
+  renderWatchList(dom.stockWatchList, state.watchStocks);
+  updateWatchManageText();
+}
+
 function renderWatchList(target, items) {
   if (!items.length) {
     target.innerHTML = `<div class="empty">当前暂无股票自选项。</div>`;
     return;
   }
+  const selectedCodes = new Set(state.selectedWatchCodes);
   target.innerHTML = items.map((item) => `
-    <div class="watch-item">
+    <div
+      class="watch-item ${selectedCodes.has(item.code) ? "selected" : ""}"
+      data-watch-code="${esc(item.code)}"
+      role="button"
+      tabindex="0"
+      aria-pressed="${selectedCodes.has(item.code) ? "true" : "false"}"
+    >
       <div class="watch-main">
-        <strong>${esc(item.name)}</strong>
-        <span>${esc(item.code)}</span>
+        <span class="watch-select-indicator" aria-hidden="true">${selectedCodes.has(item.code) ? "✓" : "✓"}</span>
+        <div class="watch-main-copy">
+          <strong>${esc(item.name)}</strong>
+          <span>${esc(item.code)} · ${esc(watchSourceLabel(item))}</span>
+        </div>
       </div>
-      <button class="danger-button" type="button" onclick="deleteStock('${esc(item.code)}')">删除</button>
+      <div class="watch-item-actions">
+        <span class="watch-item-hint">${selectedCodes.has(item.code) ? "已选中" : "点击整行选择"}</span>
+        <button class="action-button" type="button" data-watch-analyze="${esc(item.code)}">分析</button>
+        <button class="danger-button" type="button" data-watch-delete="${esc(item.code)}" aria-label="删除 ${esc(item.name)}">删除</button>
+      </div>
     </div>
   `).join("");
 }
@@ -369,6 +940,7 @@ function normalizeRunOncePayload(payload) {
 }
 
 function renderStockResults(results, failedDetails = {}) {
+  const visibleResults = persistedStockResults(results);
   if (!results.length) {
     dom.stockResults.innerHTML = `<div class="empty">本次没有返回个股结果。</div>`;
     dom.heatmap.innerHTML = `<div class="empty">本次没有热力图数据。</div>`;
@@ -399,10 +971,18 @@ function renderStockResults(results, failedDetails = {}) {
     </article>
   ` : "";
 
-  dom.stockResults.innerHTML = `${failureSummaryCard}${results.map((item) => {
+  if (!visibleResults.length) {
+    dom.stockResults.innerHTML = `${failureSummaryCard}<div class="empty">当前分析结果卡片已全部从看板隐藏。重新运行分析或再次打开个股分析后会恢复。</div>`;
+    renderHeatmap(results);
+    return;
+  }
+
+  dom.stockResults.innerHTML = `${failureSummaryCard}${visibleResults.map((item) => {
     const analysis = item.analysis || {};
     const market = item.market_data || {};
     const fund = item.fund_flow || {};
+    const cardId = getStockResultId(item);
+    const hiddenFund = resolveHiddenFundData(item);
     const isError = item.status !== "ok";
     const changeTone = tone(market.pct_change);
     const fundTone = tone(fund.main_net_inflow);
@@ -426,15 +1006,27 @@ function renderStockResults(results, failedDetails = {}) {
     ].join("") || `<span class="stock-tag neutral">暂无信号</span>`;
 
     return `
-      <article class="card stock-card ${isError ? "error" : ""}">
+      <article class="card stock-card stock-result-card ${isError ? "error" : ""}" data-stock-result-id="${esc(cardId)}">
         <div class="stock-card-head">
           <div class="stock-title">
             <h3>${esc(item.name || "未知股票")}</h3>
             <span>${esc(item.code || "N/A")}</span>
           </div>
-          <div class="stock-score">
-            <span>评分</span>
-            <strong>${esc(item.score ?? 0)}</strong>
+          <div class="stock-card-actions">
+            <div class="stock-score">
+              <span>评分</span>
+              <strong>${esc(item.score ?? 0)}</strong>
+            </div>
+            ${cardId ? `
+              <div class="card-inline-actions" aria-label="卡片操作">
+                <button class="card-handle-button" type="button" data-stock-drag-handle aria-label="拖动排序 ${esc(item.name || cardId)}" title="拖动排序">
+                  <span aria-hidden="true">⋮⋮</span>
+                </button>
+                <button class="card-remove-button" type="button" data-stock-hide="${esc(cardId)}" aria-label="删除 ${esc(item.name || cardId)}" title="从当前看板隐藏">
+                  <span aria-hidden="true">✕</span>
+                </button>
+              </div>
+            ` : ""}
           </div>
         </div>
         <div class="stock-quote-row">
@@ -451,6 +1043,27 @@ function renderStockResults(results, failedDetails = {}) {
           <strong class="${fundTone}">${stockAmountText(fund.main_net_inflow)}</strong>
         </div>
         <div class="stock-conclusion">${esc(conclusion)}</div>
+        <section class="hidden-fund-card" aria-label="暗盘资金">
+          <div class="hidden-fund-head">
+            <div>
+              <strong>📊 暗盘资金</strong>
+              <span class="sub">${hiddenFund.hasSignal ? "基于当前分析结果提取的暗盘资金信号" : esc(NO_HIDDEN_FUND_MESSAGE)}</span>
+            </div>
+            <div class="hidden-fund-score ${hiddenFund.toneClass}">
+              <span>${esc(hiddenFund.scoreText)}</span>
+              <em>${esc(hiddenFund.tag)}</em>
+            </div>
+          </div>
+          <div class="hidden-fund-meter" aria-hidden="true">
+            <span class="hidden-fund-meter-bar ${hiddenFund.toneClass}" style="width:${hiddenFund.meterWidth}%"></span>
+          </div>
+          <div class="hidden-fund-reason">${esc(hiddenFund.reason)}</div>
+          <div class="stock-tag-row">
+            ${(hiddenFund.labels.length
+              ? hiddenFund.labels.map((label) => `<span class="stock-tag signal">${esc(label)}</span>`).join("")
+              : `<span class="stock-tag neutral">${esc(NO_HIDDEN_FUND_MESSAGE)}</span>`)}
+          </div>
+        </section>
         <div class="stock-dimension-row">
           ${dimensionItems.map(([label, value]) => `
             <span class="stock-dimension">
@@ -557,7 +1170,43 @@ function opportunityBrief(item) {
   return firstSentence(text, "暂无摘要");
 }
 
-function opportunityReasonTags(item, limit = 3) {
+function opportunityQuoteValue(item, ...keys) {
+  const market = item?.market_data && typeof item.market_data === "object" ? item.market_data : {};
+  const quote = item?.quote && typeof item.quote === "object" ? item.quote : {};
+  for (const key of keys) {
+    const value = firstDefinedValue(item?.[key], market?.[key], quote?.[key]);
+    if (value !== null && value !== undefined && value !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function opportunityPriceText(item) {
+  return stockPriceText(opportunityQuoteValue(item, "latest_price", "price", "close"));
+}
+
+function opportunityChangeText(item) {
+  return stockPercentText(opportunityQuoteValue(item, "pct_change", "change_pct"));
+}
+
+function opportunityChangeTone(item) {
+  return tone(opportunityQuoteValue(item, "pct_change", "change_pct"));
+}
+
+function normalizeOpportunityTag(tag) {
+  const text = firstSentence(tag, "");
+  if (!text) return "";
+  if (text.includes("明显放量") || text.includes("量能放大")) return "明显放量";
+  if (text.includes("换手过热")) return "换手过热";
+  if (text.includes("站上20日线")) return "站上20日线";
+  if (text.includes("接近60日线")) return "接近60日线";
+  if (text.includes("60日")) return "接近60日线";
+  if (text.includes("低位")) return "低位区";
+  return text;
+}
+
+function opportunityDecisionTags(item, limit = 4) {
   const score = opportunityScoreObject(item);
   const rawTags = [
     ...(Array.isArray(score.tags) ? score.tags : []),
@@ -566,19 +1215,33 @@ function opportunityReasonTags(item, limit = 3) {
   ];
   const tags = [];
   rawTags.forEach((tag) => {
-    const label = firstSentence(tag, "");
+    const label = normalizeOpportunityTag(tag);
     if (label && !tags.includes(label)) tags.push(label);
   });
 
   if (!tags.length) {
     const features = item?.features || {};
-    if (features.trend_turn) tags.push("趋势转强");
-    if (features.volume_spike) tags.push("量能放大");
+    if (features.volume_spike) tags.push("明显放量");
+    if (features.turnover_hot) tags.push("换手过热");
+    if (features.trend_turn) tags.push("站上20日线");
+    if (features.near_ma60) tags.push("接近60日线");
     if (features.stop_falling) tags.push("止跌确认");
-    if (features.bullish_break) tags.push("阳线突破");
+    if (features.low_zone) tags.push("低位区");
   }
 
-  return tags.slice(0, limit);
+  const board = String(item?.board || "").trim();
+  if ((board === "sz_main" || board === "sh_main") && !tags.includes("主板正式机会")) {
+    tags.push("主板正式机会");
+  }
+
+  const priority = ["低位区", "明显放量", "换手过热", "站上20日线", "接近60日线", "主板正式机会"];
+  return [...tags].sort((a, b) => {
+    const aIndex = priority.indexOf(a);
+    const bIndex = priority.indexOf(b);
+    const normalizedA = aIndex === -1 ? 999 : aIndex;
+    const normalizedB = bIndex === -1 ? 999 : bIndex;
+    return normalizedA - normalizedB;
+  }).slice(0, limit);
 }
 
 function opportunityDetailParagraphs(item) {
@@ -592,6 +1255,15 @@ function opportunityDetailParagraphs(item) {
     return firstSentence(text, "") !== brief;
   });
   return [...new Set(rows)];
+}
+
+function opportunityWatchButton(item, compact = false) {
+  const symbol = opportunitySymbol(item);
+  if (!symbol) return "";
+  const active = isWatchlisted(symbol);
+  const pending = isWatchMutationPending(symbol);
+  const label = pending ? "处理中..." : active ? "已加入" : compact ? "+关注" : "加入自选";
+  return `<button class="watch-toggle-button ${active ? "active" : ""}" type="button" data-watch-toggle="${esc(symbol)}" data-watch-name="${esc(item.name || symbol)}" data-watch-board="${esc(item.board || "")}" data-watch-source="opportunity_pool" ${pending ? "disabled" : ""}>${esc(label)}</button>`;
 }
 
 function renderOpportunityTabs() {
@@ -613,11 +1285,86 @@ function setOpportunitySectionVisible(element, isVisible) {
   element.style.display = isVisible ? "" : "none";
 }
 
+function formatOpportunityStatNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return "--";
+  return numeric.toLocaleString("zh-CN");
+}
+
+function renderOpportunityScanStats() {
+  const container = dom.opportunityScanStats;
+  if (!container) return;
+
+  if (state.opportunityMode !== "stock") {
+    container.classList.add("hidden");
+    return;
+  }
+
+  const stats = state.opportunityScanStats || {};
+  const meta = state.opportunityCacheMeta || {};
+  const hasVisibleStats = ["scanned_total", "prefiltered_total", "history_refined_total", "returned_total"].some((key) => {
+    const numeric = Number(stats[key]);
+    return Number.isFinite(numeric) && numeric >= 0;
+  });
+
+  if (!hasVisibleStats) {
+    container.classList.add("hidden");
+    return;
+  }
+
+  container.classList.remove("hidden");
+  const modeLabel = OPPORTUNITY_SCOPE_LABELS[state.opportunityScope] || "全市场";
+  if (dom.opportunityScanModeText) {
+    dom.opportunityScanModeText.textContent = `当前模式：${modeLabel}`;
+  }
+  if (dom.opportunityCacheInfoText) {
+    const cacheDate = String(meta.cache_date || "").trim();
+    const generatedAt = String(meta.generated_at || "").trim();
+    const cacheHint = meta.is_cached ? "来自缓存" : "最新生成";
+    const parts = ["今日机会池"];
+    if (cacheDate) parts.push(cacheDate);
+    if (generatedAt) parts.push(`更新时间 ${generatedAt}`);
+    parts.push(cacheHint);
+    dom.opportunityCacheInfoText.textContent = parts.join(" · ");
+  }
+  if (dom.opportunityScannedTotal) {
+    dom.opportunityScannedTotal.textContent = formatOpportunityStatNumber(stats.scanned_total);
+  }
+  if (dom.opportunityPrefilteredTotal) {
+    dom.opportunityPrefilteredTotal.textContent = formatOpportunityStatNumber(stats.prefiltered_total);
+  }
+  if (dom.opportunityRefinedTotal) {
+    dom.opportunityRefinedTotal.textContent = formatOpportunityStatNumber(stats.history_refined_total);
+  }
+  if (dom.opportunityReturnedTotal) {
+    dom.opportunityReturnedTotal.textContent = formatOpportunityStatNumber(stats.returned_total);
+  }
+  if (dom.opportunityScanBadges) {
+    const badges = [];
+    if (meta.used_full_market_scan === true || stats.used_full_market_scan === true) {
+      badges.push(`<span class="chip good">真实全市场扫描</span>`);
+    }
+    if (stats.used_fallback === true) {
+      badges.push(`<span class="chip bad">已启用保底结果</span>`);
+    }
+    const boardLabel = OPPORTUNITY_BOARD_LABELS[stats.board] || OPPORTUNITY_BOARD_LABELS[state.opportunityBoard] || "";
+    if (boardLabel) {
+      badges.push(`<span class="chip blue">${esc(boardLabel)}</span>`);
+    }
+    dom.opportunityScanBadges.innerHTML = badges.join("");
+  }
+  if (dom.opportunityRefreshBtn) {
+    const shouldShowRefresh = IS_LOCAL_DEV && state.opportunityMode === "stock" && state.opportunityScope === "market";
+    dom.opportunityRefreshBtn.hidden = !shouldShowRefresh;
+  }
+}
+
 function syncOpportunityModeSections() {
   const isStockMode = state.opportunityMode === "stock";
   setOpportunitySectionVisible(dom.opportunityScopeTabs, isStockMode);
   setOpportunitySectionVisible(dom.opportunityBoardTabs, isStockMode);
   setOpportunitySectionVisible(dom.opportunityDetailPanel, isStockMode);
+  renderOpportunityScanStats();
 }
 
 function fetchJson(url, options) {
@@ -665,6 +1412,210 @@ function fetchJson(url, options) {
   });
 }
 
+function styleDirectionText(item) {
+  const flow = Number(item?.net_inflow || 0);
+  if (flow > 0) return "净流入";
+  if (flow < 0) return "净流出";
+  return "均衡";
+}
+
+function renderStyleDistribution(items = [], summary = {}) {
+  if (!dom.styleFlowDistribution) return;
+  if (!items.length) {
+    dom.styleFlowDistribution.innerHTML = `<div class="empty">暂无风格资金分布数据。</div>`;
+    return;
+  }
+
+  dom.styleFlowDistribution.innerHTML = items.map((item) => {
+    const relatedEtfs = Array.isArray(item.related_etfs) ? item.related_etfs : [];
+    const direction = item.direction || "neutral";
+    return `
+      <article class="style-flow-card ${esc(direction)}">
+        <div class="style-flow-card-head">
+          <div>
+            <h3>${esc(item.style_name || "未命名风格")}</h3>
+            <p>${esc(item.description || "暂无说明")}</p>
+          </div>
+          <span class="chip ${direction === "up" ? "good" : direction === "down" ? "bad" : "blue"}">${esc(styleDirectionText(item))}</span>
+        </div>
+        <div class="style-flow-main ${direction}">${amt(item.net_inflow)}</div>
+        <div class="style-flow-sub">${esc(item.summary || "暂无总结")}</div>
+        <div class="style-flow-metrics">
+          <div class="style-flow-metric"><small>平均涨跌幅</small><strong class="${tone(item.avg_change_pct)}">${pct(item.avg_change_pct)}</strong></div>
+          <div class="style-flow-metric"><small>主力资金流</small><strong class="${tone(item.main_flow)}">${amt(item.main_flow)}</strong></div>
+          <div class="style-flow-metric"><small>成交额</small><strong>${amt(item.turnover)}</strong></div>
+          <div class="style-flow-metric"><small>关联ETF</small><strong>${esc(relatedEtfs.length)}</strong></div>
+          <div class="style-flow-metric"><small>博弈强度</small><strong>${esc(item.strength_score ?? 0)}</strong></div>
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  const updatedAt = summary?.updated_at || "未知时间";
+  setChip(dom.styleFlowMeta, `更新于 ${updatedAt} · 总净流 ${amt(summary?.total_net_inflow ?? 0)}`, "blue");
+}
+
+function renderStyleIntent(intent = {}, summary = {}) {
+  if (!dom.styleIntentPanel) return;
+  if (!intent || !Object.keys(intent).length) {
+    dom.styleIntentPanel.innerHTML = `<div class="empty">暂无风格博弈意图数据。</div>`;
+    return;
+  }
+
+  const labels = Array.isArray(intent.signal_labels) ? intent.signal_labels : [];
+  const modeTone = Number(intent.core_value) > 0 ? "good" : Number(intent.core_value) < 0 ? "bad" : "blue";
+  dom.styleIntentPanel.innerHTML = `
+    <div class="style-intent-shell">
+      <div class="style-intent-head">
+        <div>
+          <div class="style-intent-title-row">
+            <h3>${esc(intent.mode || "风格意图待判断")}</h3>
+            <span class="chip ${modeTone}">${esc(intent.mode_key || "--")}</span>
+          </div>
+          <p>${esc(intent.summary || "暂无总结")}</p>
+        </div>
+      </div>
+      <div class="style-intent-stats">
+        <div class="style-intent-stat">
+          <small>攻防差值</small>
+          <strong class="${tone(intent.core_value)}">${num(intent.core_value)}</strong>
+        </div>
+        <div class="style-intent-stat">
+          <small>进攻分数</small>
+          <strong>${esc(intent.attack_score ?? "--")}</strong>
+        </div>
+        <div class="style-intent-stat">
+          <small>防御分数</small>
+          <strong>${esc(intent.defense_score ?? "--")}</strong>
+        </div>
+      </div>
+      <div class="style-intent-indicators">
+        <article class="style-intent-indicator">
+          <small>风险等级</small>
+          <strong>${esc(intent.risk_level || "--")}</strong>
+          <p>结合攻防强弱后的 V1 风险口径。</p>
+        </article>
+        <article class="style-intent-indicator">
+          <small>最强流入风格</small>
+          <strong>${esc(intent.top_inflow_style || summary?.top_inflow_style || "--")}</strong>
+          <p>当前净流入最强的风格方向。</p>
+        </article>
+        <article class="style-intent-indicator">
+          <small>相对流出风格</small>
+          <strong>${esc(intent.top_outflow_style || summary?.top_outflow_style || "--")}</strong>
+          <p>当前净流出或承压更明显的方向。</p>
+        </article>
+      </div>
+      <div class="chips">
+        ${(labels.length ? labels : ["暂无信号标签"]).map((text) => `<span class="chip">${esc(text)}</span>`).join("")}
+      </div>
+      <div class="style-flow-sub">更新时间：${esc(intent.update_time || summary?.updated_at || "--")}</div>
+    </div>
+  `;
+}
+
+function renderStyleEtfGroups(styles = []) {
+  if (!dom.styleEtfGroups) return;
+  if (!styles.length) {
+    dom.styleEtfGroups.innerHTML = `<div class="empty">暂无关联 ETF 数据。</div>`;
+    return;
+  }
+
+  dom.styleEtfGroups.innerHTML = styles.map((style) => {
+    const etfs = Array.isArray(style.related_etfs) ? style.related_etfs : [];
+    const direction = style.direction || "neutral";
+    return `
+      <section class="style-etf-group">
+        <div class="style-etf-group-head">
+          <div>
+            <h3>${esc(style.style_name || "未命名风格")}</h3>
+            <p>${esc(style.summary || style.description || "暂无说明")}</p>
+          </div>
+          <span class="chip ${direction === "up" ? "good" : direction === "down" ? "bad" : "blue"}">${esc(styleDirectionText(style))}</span>
+        </div>
+        <div class="style-etf-list">
+          ${etfs.map((etf) => `
+            <button
+              class="style-etf-chip"
+              type="button"
+              data-style-etf-code="${esc(etf.code || "")}"
+              data-style-etf-name="${esc(etf.name || "")}"
+              data-style-index-code="${esc(etf.index_code || "")}"
+            >
+              <span class="style-etf-chip-title">${esc(etf.name || etf.code || "ETF")}</span>
+              <span class="style-etf-chip-sub ${tone(etf.pct_change)}">${esc(etf.code || "")} · ${pct(etf.pct_change)} · ${amt(etf.main_net_inflow)}</span>
+            </button>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }).join("");
+}
+
+async function openStyleEtfLink(code, name, indexCode = "") {
+  const normalizedCode = String(code || "").trim();
+  if (!normalizedCode) return;
+  if (indexCode) {
+    switchView("etfView");
+    await loadIndexDetail(indexCode, true);
+    showToast(`${name || normalizedCode} 已联动到指数ETF页`, "good");
+    return;
+  }
+  window.open(apiPath(`/api/etf/analyze?code=${encodeURIComponent(normalizedCode)}`), "_blank", "noopener");
+}
+
+async function loadStyleFlowWidgets(forceRefresh = false) {
+  if (!dom.styleFlowStatus) return;
+  try {
+    setChip(dom.styleFlowStatus, forceRefresh ? "正在刷新风格数据..." : "正在加载风格数据...", "blue");
+    if (dom.styleFlowDistribution) {
+      dom.styleFlowDistribution.innerHTML = `<div class="loading"><div><div class="spinner"></div>正在计算风格资金分布...</div></div>`;
+    }
+    if (dom.styleIntentPanel) {
+      dom.styleIntentPanel.innerHTML = `<div class="loading"><div><div class="spinner"></div>正在推导风格博弈意图...</div></div>`;
+    }
+
+    const [flowPayload, intentPayload] = await Promise.all([
+      fetchJson(api.styleFundFlow),
+      fetchJson(api.styleIntent),
+    ]);
+
+    state.styleFlowPayload = flowPayload;
+    state.styleIntentPayload = intentPayload;
+
+    const styles = flowPayload.data?.styles || flowPayload.data?.items || [];
+    const intent = intentPayload.data?.item || {};
+    const summary = {
+      ...(flowPayload.data?.summary || {}),
+      ...(intentPayload.data?.summary || {}),
+    };
+
+    renderStyleDistribution(styles, summary);
+    renderStyleIntent(intent, summary);
+    renderStyleEtfGroups(styles);
+
+    setChip(
+      dom.styleFlowStatus,
+      `已加载 ${styles.length} 个风格 · ${summary?.updated_at || "刚刚"}`,
+      "good",
+    );
+  } catch (error) {
+    setChip(dom.styleFlowStatus, `加载失败：${error.message}`, "bad");
+    if (dom.styleFlowMeta) {
+      setChip(dom.styleFlowMeta, `加载失败：${error.message}`, "bad");
+    }
+    if (dom.styleFlowDistribution) {
+      dom.styleFlowDistribution.innerHTML = `<div class="empty">风格资金分布加载失败：${esc(error.message)}</div>`;
+    }
+    if (dom.styleIntentPanel) {
+      dom.styleIntentPanel.innerHTML = `<div class="empty">风格博弈意图加载失败：${esc(error.message)}</div>`;
+    }
+    if (dom.styleEtfGroups) {
+      dom.styleEtfGroups.innerHTML = `<div class="empty">关联 ETF 列表加载失败：${esc(error.message)}</div>`;
+    }
+  }
+}
+
 function buildSparkline(points, width = 220, height = 40) {
   if (!Array.isArray(points) || points.length < 2) return "";
   const min = Math.min(...points);
@@ -705,30 +1656,41 @@ function renderRecommendedOpportunity() {
   const signal = opportunitySignal(item);
   const scopeLabel = opportunityScopeLabel(item);
   const boardLabel = opportunityBoardLabel(item);
-  const reasonTags = opportunityReasonTags(item);
+  const decisionTags = opportunityDecisionTags(item, 4);
+  const priceText = opportunityPriceText(item);
+  const changeText = opportunityChangeText(item);
+  const changeTone = opportunityChangeTone(item);
   dom.opportunityRecommendCard.innerHTML = `
     <div class="recommend-main">
-      <div class="chips">
-        <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
-        <span class="chip">今日先看</span>
-        ${scopeLabel ? `<span class="chip">${esc(scopeLabel)}</span>` : ""}
-        ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
-        ${item.badge ? `<span class="chip">${esc(item.badge)}</span>` : ""}
-      </div>
-      <div>
-        <h3>${esc(item.name)}</h3>
-        <div class="sub">${esc(symbol)}</div>
-      </div>
-      <div class="recommend-score">
+      <div class="opportunity-card-top">
         <div>
-          <small class="sub">综合评分</small>
-          <strong>${esc(scoreValue)}</strong>
+          <div class="chips">
+            <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
+            <span class="chip">今日先看</span>
+            ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
+            ${scopeLabel ? `<span class="chip">${esc(scopeLabel)}</span>` : ""}
+          </div>
+          <h3>${esc(item.name)}</h3>
+          <div class="opportunity-code">${esc(symbol)}</div>
+        </div>
+        <div class="opportunity-card-actions">
+          ${opportunityWatchButton(item)}
+          <div class="recommend-score">
+            <div>
+              <small class="sub">综合评分</small>
+              <strong>${esc(scoreValue)}</strong>
+            </div>
+          </div>
         </div>
       </div>
+      <div class="opportunity-quote-row">
+        <strong class="opportunity-price">${esc(priceText)}</strong>
+        <span class="opportunity-change ${changeTone}">${esc(changeText)}</span>
+      </div>
       <div class="recommend-text">${esc(opportunityBrief(item))}</div>
-      ${reasonTags.length ? `
+      ${decisionTags.length ? `
         <div class="chips">
-          ${reasonTags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
+          ${decisionTags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
         </div>
       ` : ""}
     </div>
@@ -772,24 +1734,32 @@ function renderOpportunityPool() {
   const cards = items.map((item, index) => {
     const symbol = opportunitySymbol(item);
     const scoreValue = opportunityScoreValue(item);
-    const signal = opportunitySignal(item);
     const boardLabel = opportunityBoardLabel(item);
+    const tags = opportunityDecisionTags(item, 4);
+    const priceText = opportunityPriceText(item);
+    const changeText = opportunityChangeText(item);
+    const changeTone = opportunityChangeTone(item);
     return `
     <article class="opportunity-pool-item ${state.activeOpportunityCode === symbol ? "active" : ""}" data-opportunity-code="${esc(symbol)}">
-      <div class="opportunity-head">
+      <div class="opportunity-card-top">
         <div>
           <h3>${esc(item.name)}</h3>
-          <div class="opportunity-code">${esc(symbol)}</div>
+          <div class="opportunity-code">${esc(symbol)}${boardLabel ? ` · ${esc(boardLabel)}` : ""}</div>
         </div>
-        <div class="opportunity-score">${esc(scoreValue)}</div>
+        <div class="opportunity-card-actions">
+          ${opportunityWatchButton(item, true)}
+          <div class="opportunity-score">${esc(scoreValue)}</div>
+        </div>
       </div>
-      <div class="chips">
-        <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
-        <span class="chip">第 ${esc(index + 1)}</span>
-        ${boardLabel ? `<span class="chip blue">${esc(boardLabel)}</span>` : ""}
-        ${item.badge ? `<span class="chip">${esc(item.badge)}</span>` : ""}
+      <div class="opportunity-quote-row">
+        <strong class="opportunity-price">${esc(priceText)}</strong>
+        <span class="opportunity-change ${changeTone}">${esc(changeText)}</span>
       </div>
       <div class="opportunity-reason">${esc(opportunityBrief(item))}</div>
+      <div class="chips">
+        <span class="chip">第 ${esc(index + 1)}</span>
+        ${tags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
+      </div>
     </article>
   `;
   }).join("");
@@ -827,6 +1797,10 @@ function renderOpportunityDetail() {
   const scopeLabel = opportunityScopeLabel(item);
   const boardLabel = opportunityBoardLabel(item);
   const detailParagraphs = opportunityDetailParagraphs(item);
+  const decisionTags = opportunityDecisionTags(item, 4);
+  const priceText = opportunityPriceText(item);
+  const changeText = opportunityChangeText(item);
+  const changeTone = opportunityChangeTone(item);
   dom.opportunityDetailPanel.innerHTML = `
     <div class="chips">
       <span class="chip ${signalTone(signal)}">${esc(signal)}</span>
@@ -839,6 +1813,16 @@ function renderOpportunityDetail() {
     <div style="margin-top:14px;">
       <h3>${esc(item.name)}</h3>
       <div class="sub">${esc(symbol)}</div>
+    </div>
+    <div class="opportunity-detail-head">
+      <div class="opportunity-quote-row">
+        <strong class="opportunity-price">${esc(priceText)}</strong>
+        <span class="opportunity-change ${changeTone}">${esc(changeText)}</span>
+      </div>
+      <div class="opportunity-detail-actions">
+        ${opportunityWatchButton(item)}
+        <button class="action-button" type="button" data-opportunity-open-stock="${esc(symbol)}" data-opportunity-stock-name="${esc(item.name || symbol)}">打开个股分析</button>
+      </div>
     </div>
     <div style="margin-top:12px;">
       <div class="sub">详细分析</div>
@@ -866,6 +1850,11 @@ function renderOpportunityDetail() {
       <span class="chip">趋势 ${esc(subScores.trend ?? "--")}</span>
       <span class="chip">资金 ${esc(subScores.capital ?? "--")}</span>
     </div>
+    ${decisionTags.length ? `
+      <div class="chips" style="margin-top:14px;">
+        ${decisionTags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
+      </div>
+    ` : ""}
     ${tags.length ? `
       <div class="chips" style="margin-top:14px;">
         ${tags.map((tag) => `<span class="chip blue">${esc(tag)}</span>`).join("")}
@@ -890,7 +1879,7 @@ function getIndexByCode(code) {
 function renderIndexBoard() {
   const cards = state.selectedIndexes;
   if (!cards.length) {
-    dom.indexBoardGrid.innerHTML = `<div class="empty">当前没有已添加的指数卡片，请先在设置弹层里添加。</div>`;
+    dom.indexBoardGrid.innerHTML = `<div class="empty">当前没有已添加的指数卡片，请在下方直接添加指数。</div>`;
     dom.indexQuickChips.innerHTML = `<span class="chip">0 项</span>`;
     return;
   }
@@ -906,13 +1895,23 @@ function renderIndexBoard() {
   dom.indexBoardGrid.innerHTML = cards.map((item) => {
     const line = buildSparkline(item.sparkline || []);
     return `
-      <article class="index-mini-card ${state.activeIndexCode === item.code ? "active" : ""}" data-index-code="${esc(item.code)}">
+      <article class="index-mini-card index-board-item ${state.activeIndexCode === item.code ? "active" : ""}" data-index-code="${esc(item.code)}" data-index-card-id="${esc(getIndexCardId(item))}">
         <div class="index-card-top">
           <div>
             <h3 class="index-card-name">${esc(item.name)}</h3>
             <div class="index-card-category">${esc(item.category || "宽基")}</div>
           </div>
-          <span class="chip blue">${esc(item.category || "宽基")}</span>
+          <div class="index-card-actions">
+            <span class="chip blue">${esc(item.category || "宽基")}</span>
+            <div class="card-inline-actions" aria-label="卡片操作">
+              <button class="card-handle-button" type="button" data-index-drag-handle aria-label="拖动排序 ${esc(item.name || item.code)}" title="拖动排序">
+                <span aria-hidden="true">⋮⋮</span>
+              </button>
+              <button class="card-remove-button" type="button" data-index-hide="${esc(getIndexCardId(item))}" aria-label="删除 ${esc(item.name || item.code)}" title="从当前看板隐藏">
+                <span aria-hidden="true">✕</span>
+              </button>
+            </div>
+          </div>
         </div>
         <strong class="index-card-value ${tone(item.change_pct)}">${num(item.value)}</strong>
         <div class="index-card-change ${tone(item.change_pct)}">
@@ -929,55 +1928,19 @@ function renderIndexBoard() {
   }).join("");
 }
 
-function renderIndexSettingsModal() {
+function renderIndexAddPanel() {
   const selectedCodes = new Set(state.selectedIndexes.map((item) => item.code));
-  dom.selectedIndexCount.textContent = `${state.selectedIndexes.length} 项`;
-  dom.availableIndexCount.textContent = `${state.availableIndexes.length} 项`;
+  const addableIndexes = state.availableIndexes.filter((item) => !selectedCodes.has(item.code));
+  dom.availableIndexCount.textContent = `${addableIndexes.length} 项可添加`;
 
-  if (!state.selectedIndexes.length) {
-    dom.selectedIndexList.innerHTML = `<div class="empty">当前还没有已添加指数。</div>`;
-  } else {
-    dom.selectedIndexList.innerHTML = state.selectedIndexes.map((item, index) => `
-      <div class="selected-item-card" data-index-code="${esc(item.code)}">
-        <div class="selected-item-top">
-          <div>
-            <div class="selected-item-name">${esc(item.name)}</div>
-            <div class="selected-item-meta">${esc(item.code)} · ${esc(item.category || "宽基")} · ${pct(item.change_pct)}</div>
-          </div>
-          <span class="chip ${Number(item.change_pct) > 0 ? "good" : Number(item.change_pct) < 0 ? "bad" : "blue"}">${num(item.value)}</span>
-        </div>
-        <div class="selected-item-actions">
-          <button class="action-button" type="button" data-action="move-up" ${index === 0 ? "disabled" : ""}>上移</button>
-          <button class="action-button" type="button" data-action="move-down" ${index === state.selectedIndexes.length - 1 ? "disabled" : ""}>下移</button>
-          <button class="action-button" type="button" data-action="activate">查看详情</button>
-          <button class="action-button" type="button" data-action="remove">删除</button>
-        </div>
-      </div>
-    `).join("");
-  }
-
-  const options = state.availableIndexes.map((item) => {
-    const alreadySelected = selectedCodes.has(item.code);
+  const options = addableIndexes.map((item) => {
     return `
-      <button class="available-pill ${alreadySelected ? "disabled" : ""}" type="button" data-index-code="${esc(item.code)}" ${alreadySelected ? "disabled" : ""}>
+      <button class="available-pill" type="button" data-index-code="${esc(item.code)}" aria-label="添加 ${esc(item.name)}">
         ${esc(item.name)}
       </button>
     `;
   }).join("");
-  dom.availableIndexPool.innerHTML = options || `<div class="empty">暂无可选指数。</div>`;
-}
-
-function openIndexSettingsModal() {
-  state.isIndexModalOpen = true;
-  dom.indexSettingsModal.classList.remove("hidden");
-  dom.indexSettingsModal.setAttribute("aria-hidden", "false");
-  renderIndexSettingsModal();
-}
-
-function closeIndexSettingsModal() {
-  state.isIndexModalOpen = false;
-  dom.indexSettingsModal.classList.add("hidden");
-  dom.indexSettingsModal.setAttribute("aria-hidden", "true");
+  dom.availableIndexPool.innerHTML = options || `<div class="empty">当前可选指数已全部加入看板。</div>`;
 }
 
 function ensureActiveIndexAfterSelectionChange() {
@@ -994,13 +1957,14 @@ function ensureActiveIndexAfterSelectionChange() {
 
 async function syncSelectedIndexes(nextSelected, shouldLoadDetail = true) {
   state.selectedIndexes = nextSelected;
+  persistIndexBoardState();
   ensureActiveIndexAfterSelectionChange();
   renderIndexBoard();
-  renderIndexSettingsModal();
+  renderIndexAddPanel();
   renderHome();
 
   if (!state.selectedIndexes.length) {
-    detailError("当前没有已添加的指数，请先在设置弹层中选择指数。");
+    detailError("当前没有已添加的指数，请在下方直接添加指数。");
     setChip(dom.indexSelectionStatus, "当前没有选中指数", "bad");
     return;
   }
@@ -1111,15 +2075,17 @@ async function initializeIndexBoard(forceDefaults = false) {
   const allOptions = optionsPayload.data?.options || defaultIndexes;
 
   state.availableIndexes = allOptions;
-  if (forceDefaults || !state.selectedIndexes.length) {
+  if (forceDefaults) {
+    clearIndexBoardPersistence();
     state.selectedIndexes = defaultIndexes;
   } else {
-    state.selectedIndexes = mergeSelectedWithLatest(state.selectedIndexes, allOptions);
+    state.selectedIndexes = buildPersistedIndexSelection(defaultIndexes, allOptions);
   }
 
+  persistIndexBoardState();
   ensureActiveIndexAfterSelectionChange();
   renderIndexBoard();
-  renderIndexSettingsModal();
+  renderIndexAddPanel();
   renderHome();
 
   if (state.selectedIndexes.length) {
@@ -1127,7 +2093,7 @@ async function initializeIndexBoard(forceDefaults = false) {
     await loadIndexDetail(state.activeIndexCode || state.selectedIndexes[0].code, true);
   } else {
     setChip(dom.indexBoardStatus, "当前没有可展示的指数卡片", "bad");
-    detailError("指数卡片为空，请打开设置弹层添加指数。");
+    detailError("指数卡片为空，请在下方添加指数。");
   }
 }
 
@@ -1190,28 +2156,38 @@ function syncOpportunityView(items, mode) {
   renderRecommendedOpportunity();
   renderOpportunityPool();
   renderOpportunityDetail();
+  renderOpportunityScanStats();
 }
 
-async function applyOpportunityMode(mode, board = state.opportunityBoard, scope = state.opportunityScope) {
+async function applyOpportunityMode(mode, board = state.opportunityBoard, scope = state.opportunityScope, forceRefresh = false) {
   const requestId = ++state.opportunityRequestId;
   if (mode === "stock") {
     state.opportunityScope = scope;
     state.opportunityBoard = board;
     state.opportunityMode = "stock";
+    state.opportunityScanStats = null;
+    state.opportunityCacheMeta = null;
     renderOpportunityTabs();
     syncOpportunityModeSections();
     const scopeLabel = OPPORTUNITY_SCOPE_LABELS[scope] || "全市场";
     const boardLabel = OPPORTUNITY_BOARD_LABELS[board] || "全部";
-    setChip(dom.opportunityStatus, `正在加载${scopeLabel} · ${boardLabel}个股机会...`, "blue");
+    setChip(dom.opportunityStatus, forceRefresh ? `正在刷新${scopeLabel} · ${boardLabel}今日机会池...` : `正在加载${scopeLabel} · ${boardLabel}个股机会...`, "blue");
     dom.opportunityRecommendCard.innerHTML = `<div class="loading"><div><div class="spinner"></div>正在准备个股推荐...</div></div>`;
     dom.opportunityPoolList.innerHTML = `<div class="empty">个股机会列表加载中...</div>`;
     dom.opportunityDetailPanel.innerHTML = `<div class="empty">点击某张个股机会卡片后，这里显示详细信息。</div>`;
 
     try {
-      const payload = await fetchJson(api.opportunities(scope, board));
+      const payload = await fetchJson(api.opportunities(scope, board, forceRefresh));
       if (requestId !== state.opportunityRequestId || state.opportunityMode !== "stock") return;
       state.opportunityScope = payload.data?.scope || scope;
       state.opportunityBoard = payload.data?.board || board;
+      state.opportunityScanStats = payload.data?.scan_stats || null;
+      state.opportunityCacheMeta = {
+        cache_date: payload.data?.cache_date || "",
+        generated_at: payload.data?.generated_at || "",
+        is_cached: Boolean(payload.data?.is_cached),
+        used_full_market_scan: Boolean(payload.data?.used_full_market_scan),
+      };
       state.stockOpportunityItems = payload.data?.items || [];
       syncOpportunityView(state.stockOpportunityItems, "stock");
       const nextCode = opportunitySymbol(state.recommendedOpportunity) || opportunitySymbol(state.lowOpportunityItems[0]) || "";
@@ -1220,10 +2196,23 @@ async function applyOpportunityMode(mode, board = state.opportunityBoard, scope 
       }
       const loadedScopeLabel = payload.data?.scope_name || OPPORTUNITY_SCOPE_LABELS[state.opportunityScope] || scopeLabel;
       const loadedBoardLabel = OPPORTUNITY_BOARD_LABELS[state.opportunityBoard] || boardLabel;
-      setChip(dom.opportunityStatus, `已加载 ${state.lowOpportunityItems.length} 个${loadedScopeLabel} · ${loadedBoardLabel}个股机会`, "good");
+      const scanStats = payload.data?.scan_stats || {};
+      const scannedTotal = Number(scanStats.scanned_total || 0);
+      const refinedTotal = Number(scanStats.history_refined_total || 0);
+      const statusParts = [`已加载 ${state.lowOpportunityItems.length} 个${loadedScopeLabel} · ${loadedBoardLabel}个股机会`];
+      if (scannedTotal > 0) {
+        statusParts.push(`扫描 ${scannedTotal} 只`);
+      }
+      if (refinedTotal > 0 && refinedTotal !== scannedTotal) {
+        statusParts.push(`精算 ${refinedTotal} 只`);
+      }
+      setChip(dom.opportunityStatus, statusParts.join("，"), "good");
       return;
     } catch (error) {
       if (requestId !== state.opportunityRequestId || state.opportunityMode !== "stock") return;
+      state.opportunityScanStats = null;
+      state.opportunityCacheMeta = null;
+      renderOpportunityScanStats();
       setChip(dom.opportunityStatus, `个股机会加载失败：${error.message}`, "bad");
       dom.opportunityRecommendCard.innerHTML = `<div class="empty">个股推荐加载失败：${esc(error.message)}</div>`;
       dom.opportunityPoolList.innerHTML = `<div class="empty">个股机会列表加载失败：${esc(error.message)}</div>`;
@@ -1233,6 +2222,8 @@ async function applyOpportunityMode(mode, board = state.opportunityBoard, scope 
   }
 
   state.opportunityMode = "index";
+  state.opportunityScanStats = null;
+  state.opportunityCacheMeta = null;
   syncOpportunityView(state.indexOpportunityItems, "index");
   setChip(dom.opportunityStatus, `静态演示已加载 ${state.lowOpportunityItems.length} 个指数机会`, "good");
 }
@@ -1251,6 +2242,7 @@ async function addIndexToBoard(code) {
   if (state.selectedIndexes.some((item) => item.code === code)) return;
   const target = getIndexByCode(code);
   if (!target) return;
+  state.hiddenIndexCodes = removeIds(state.hiddenIndexCodes, [code]);
   await syncSelectedIndexes([...state.selectedIndexes, target], false);
   if (!state.activeIndexCode) {
     await loadIndexDetail(target.code, true);
@@ -1258,6 +2250,7 @@ async function addIndexToBoard(code) {
 }
 
 async function removeIndexFromBoard(code) {
+  state.hiddenIndexCodes = appendIds(state.hiddenIndexCodes, [code]);
   const nextSelected = state.selectedIndexes.filter((item) => item.code !== code);
   const removedActive = state.activeIndexCode === code;
   await syncSelectedIndexes(nextSelected, removedActive);
@@ -1271,6 +2264,23 @@ async function moveIndex(code, direction) {
   const nextSelected = [...state.selectedIndexes];
   const [moved] = nextSelected.splice(currentIndex, 1);
   nextSelected.splice(targetIndex, 0, moved);
+  await syncSelectedIndexes(nextSelected, false);
+}
+
+function hideStockResultCard(code) {
+  const targetCode = String(code || "").trim();
+  if (!targetCode) return;
+  state.hiddenStockResultCodes = appendIds(state.hiddenStockResultCodes, [targetCode]);
+  persistStoredIdArray(STOCK_RESULT_HIDDEN_STORAGE_KEY, state.hiddenStockResultCodes);
+  renderStockResults(
+    state.stockPayload?.data?.results || [],
+    state.stockPayload?.data?.failed_details || {}
+  );
+  showToast(`已从当前看板隐藏 ${targetCode}`);
+}
+
+async function applyIndexBoardOrder(ids) {
+  const nextSelected = reorderItemsByIds(state.selectedIndexes, ids, getIndexCardId);
   await syncSelectedIndexes(nextSelected, false);
 }
 
@@ -1342,8 +2352,10 @@ async function loadStocks() {
   try {
     const payload = await fetchJson(api.stocks);
     const stocks = payload.data?.stocks || [];
+    state.watchStocks = stocks;
+    syncWatchSelection(stocks);
     renderWatchList(dom.stockWatchList, stocks);
-    setChip(dom.stockManageText, `当前自选股：${stocks.length}只`);
+    updateWatchManageText();
   } catch (error) {
     setChip(dom.stockManageText, `加载失败：${error.message}`, "bad");
     dom.stockWatchList.innerHTML = `<div class="empty">股票自选池加载失败。</div>`;
@@ -1358,14 +2370,10 @@ async function addStock(stock = null) {
   }
   dom.addStockBtn.disabled = true;
   try {
-    await fetchJson(api.stocks, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: target.code, name: target.name })
-    });
+    const saved = await saveWatchStock(buildWatchPayload(target, "stock_search"));
+    if (!saved) return;
     dom.stockSearchInput.value = "";
     hideStockSearchDropdown();
-    await loadStocks();
   } catch (error) {
     alert(`添加股票失败：${error.message}`);
   } finally {
@@ -1397,6 +2405,7 @@ async function openSearchedStock(stock = null) {
       })
     );
     state.stockPayload = payload;
+    clearHiddenStockResultsForIncomingItems(payload.data.results);
     renderStockResults(payload.data.results, payload.data.failed_details);
     setChip(dom.stockRunStatus, `已打开：${target.name}`, "good");
     setChip(dom.stockElapsed, `耗时：${num(payload.data?.elapsed_seconds ?? 0, 3)}秒`);
@@ -1410,8 +2419,11 @@ async function openSearchedStock(stock = null) {
 
 async function deleteStock(code) {
   try {
-    await fetchJson(`${api.stocks}/${encodeURIComponent(code)}`, { method: "DELETE" });
-    await loadStocks();
+    const entry = state.watchStocks.find((item) => item.code === code) || { code, name: code };
+    const removed = await saveWatchStock(buildWatchPayload(entry, entry.source || "manual"), { remove: true });
+    if (!removed) {
+      alert("删除股票失败，请稍后重试");
+    }
   } catch (error) {
     alert(`删除股票失败：${error.message}`);
   }
@@ -1425,6 +2437,7 @@ async function runStockAnalysis() {
   try {
     const payload = normalizeRunOncePayload(await fetchJson(api.runStocks, { method: "POST", headers: { "Content-Type": "application/json" } }));
     state.stockPayload = payload;
+    clearHiddenStockResultsForIncomingItems(payload.data.results);
     renderStockResults(payload.data.results, payload.data.failed_details);
     renderHome();
     const failedCount = Object.keys(payload.data?.failed_details || {}).length;
@@ -1445,6 +2458,36 @@ async function runStockAnalysis() {
 async function refreshHomeData() {
   await Promise.allSettled([runStockAnalysis(), refreshIndexBoardData(false)]);
 }
+
+state.selectedWatchCodes = readStoredWatchSelection();
+state.stockResultOrder = readStoredIdArray(STOCK_RESULT_ORDER_STORAGE_KEY);
+state.hiddenStockResultCodes = readStoredIdArray(STOCK_RESULT_HIDDEN_STORAGE_KEY);
+state.indexBoardOrder = readStoredIdArray(INDEX_BOARD_ORDER_STORAGE_KEY);
+state.hiddenIndexCodes = readStoredIdArray(INDEX_BOARD_HIDDEN_STORAGE_KEY);
+
+createSortableGrid(dom.stockResults, {
+  itemSelector: ".stock-result-card",
+  handleSelector: "[data-stock-drag-handle]",
+  dataAttribute: "stockResultId",
+  onCommit(ids) {
+    replaceStoredIdArray(STOCK_RESULT_ORDER_STORAGE_KEY, ids, (value) => {
+      state.stockResultOrder = value;
+    });
+    renderStockResults(
+      state.stockPayload?.data?.results || [],
+      state.stockPayload?.data?.failed_details || {}
+    );
+  }
+});
+
+createSortableGrid(dom.indexBoardGrid, {
+  itemSelector: ".index-board-item",
+  handleSelector: "[data-index-drag-handle]",
+  dataAttribute: "indexCardId",
+  onCommit(ids) {
+    applyIndexBoardOrder(ids);
+  }
+});
 
 dom.navButtons.forEach((button) => button.addEventListener("click", () => switchView(button.dataset.view)));
 dom.refreshHomeBtn.addEventListener("click", refreshHomeData);
@@ -1469,41 +2512,71 @@ document.addEventListener("click", (event) => {
   if (event.target.closest(".stock-search")) return;
   hideStockSearchDropdown();
 });
+dom.stockWatchList.addEventListener("click", (event) => {
+  const analyzeButton = event.target.closest("[data-watch-analyze]");
+  if (analyzeButton) {
+    event.stopPropagation();
+    const code = analyzeButton.dataset.watchAnalyze || "";
+    const entry = state.watchStocks.find((item) => item.code === code);
+    if (entry) openSearchedStock(entry);
+    return;
+  }
+  const deleteButton = event.target.closest("[data-watch-delete]");
+  if (deleteButton) {
+    event.stopPropagation();
+    deleteStock(deleteButton.dataset.watchDelete || "");
+    return;
+  }
+  const item = event.target.closest("[data-watch-code]");
+  if (!item) return;
+  toggleWatchSelection(item.dataset.watchCode || "");
+});
+dom.stockWatchList.addEventListener("keydown", (event) => {
+  const item = event.target.closest("[data-watch-code]");
+  if (!item) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  toggleWatchSelection(item.dataset.watchCode || "");
+});
 dom.runStockBtn.addEventListener("click", runStockAnalysis);
 dom.refreshIndexBtn.addEventListener("click", () => refreshIndexBoardData(false));
-dom.openIndexSettingsBtn.addEventListener("click", openIndexSettingsModal);
-dom.openIndexSettingsInlineBtn.addEventListener("click", openIndexSettingsModal);
-dom.closeIndexSettingsBtn.addEventListener("click", closeIndexSettingsModal);
-dom.indexSettingsBackdrop.addEventListener("click", closeIndexSettingsModal);
-dom.resetIndexBoardBtn.addEventListener("click", () => refreshIndexBoardData(true));
-dom.refreshIndexInlineBtn.addEventListener("click", () => refreshIndexBoardData(false));
+dom.refreshStyleFlowBtn?.addEventListener("click", () => loadStyleFlowWidgets(true));
+dom.opportunityRefreshBtn?.addEventListener("click", () => applyOpportunityMode("stock", state.opportunityBoard, state.opportunityScope, true));
+
+dom.stockResults.addEventListener("click", (event) => {
+  const deleteButton = event.target.closest("[data-stock-hide]");
+  if (!deleteButton) return;
+  event.stopPropagation();
+  hideStockResultCard(deleteButton.dataset.stockHide || "");
+});
 
 dom.indexBoardGrid.addEventListener("click", (event) => {
+  const deleteButton = event.target.closest("[data-index-hide]");
+  if (deleteButton) {
+    event.stopPropagation();
+    removeIndexFromBoard(deleteButton.dataset.indexHide || "");
+    return;
+  }
+  if (event.target.closest("[data-index-drag-handle]")) return;
   const card = event.target.closest(".index-mini-card");
   if (!card) return;
   loadIndexDetail(card.dataset.indexCode || "", false);
-});
-
-dom.selectedIndexList.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-action]");
-  const card = event.target.closest("[data-index-code]");
-  if (!button || !card) return;
-  const code = card.dataset.indexCode || "";
-  const action = button.dataset.action;
-  if (action === "move-up") await moveIndex(code, "up");
-  if (action === "move-down") await moveIndex(code, "down");
-  if (action === "remove") await removeIndexFromBoard(code);
-  if (action === "activate") {
-    state.activeIndexCode = code;
-    closeIndexSettingsModal();
-    await loadIndexDetail(code, true);
-  }
 });
 
 dom.availableIndexPool.addEventListener("click", async (event) => {
   const button = event.target.closest(".available-pill");
   if (!button || button.disabled) return;
   await addIndexToBoard(button.dataset.indexCode || "");
+});
+
+dom.styleEtfGroups?.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-style-etf-code]");
+  if (!button) return;
+  await openStyleEtfLink(
+    button.dataset.styleEtfCode || "",
+    button.dataset.styleEtfName || "",
+    button.dataset.styleIndexCode || "",
+  );
 });
 
 dom.opportunityTabs?.addEventListener("click", (event) => {
@@ -1525,12 +2598,55 @@ dom.opportunityBoardTabs?.addEventListener("click", (event) => {
 });
 
 dom.opportunityPoolList.addEventListener("click", (event) => {
+  const watchToggle = event.target.closest("[data-watch-toggle]");
+  if (watchToggle) {
+    event.stopPropagation();
+    const payload = buildWatchPayload({
+      code: watchToggle.dataset.watchToggle || "",
+      name: watchToggle.dataset.watchName || "",
+      board: watchToggle.dataset.watchBoard || "",
+    }, watchToggle.dataset.watchSource || "opportunity_pool");
+    saveWatchStock(payload, { remove: isWatchlisted(payload.code) });
+    return;
+  }
   const card = event.target.closest(".opportunity-pool-item");
   if (!card) return;
   loadOpportunityDetail(card.dataset.opportunityCode || "", false);
 });
-
-window.deleteStock = deleteStock;
-
+dom.opportunityRecommendCard?.addEventListener("click", (event) => {
+  const watchToggle = event.target.closest("[data-watch-toggle]");
+  if (watchToggle) {
+    event.stopPropagation();
+    const payload = buildWatchPayload({
+      code: watchToggle.dataset.watchToggle || "",
+      name: watchToggle.dataset.watchName || "",
+      board: watchToggle.dataset.watchBoard || "",
+    }, watchToggle.dataset.watchSource || "opportunity_pool");
+    saveWatchStock(payload, { remove: isWatchlisted(payload.code) });
+    return;
+  }
+  const current = state.recommendedOpportunity;
+  if (!current) return;
+  loadOpportunityDetail(opportunitySymbol(current), false);
+});
+dom.opportunityDetailPanel?.addEventListener("click", (event) => {
+  const watchToggle = event.target.closest("[data-watch-toggle]");
+  if (watchToggle) {
+    const payload = buildWatchPayload({
+      code: watchToggle.dataset.watchToggle || "",
+      name: watchToggle.dataset.watchName || "",
+      board: watchToggle.dataset.watchBoard || "",
+    }, watchToggle.dataset.watchSource || "opportunity_pool");
+    saveWatchStock(payload, { remove: isWatchlisted(payload.code) });
+    return;
+  }
+  const openStock = event.target.closest("[data-opportunity-open-stock]");
+  if (openStock) {
+    openSearchedStock({
+      code: openStock.dataset.opportunityOpenStock || "",
+      name: openStock.dataset.opportunityStockName || "",
+    });
+  }
+});
 restoreActiveView();
-Promise.allSettled([loadStocks(), refreshIndexBoardData(true), loadOpportunityWidgets()]).then(renderHome);
+Promise.allSettled([loadStocks(), refreshIndexBoardData(false), loadStyleFlowWidgets(false), loadOpportunityWidgets()]).then(renderHome);
